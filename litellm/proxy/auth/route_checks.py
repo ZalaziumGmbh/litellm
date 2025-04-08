@@ -11,14 +11,11 @@ from litellm.proxy._types import (
     LitellmUserRoles,
     UserAPIKeyAuth,
 )
-from litellm.proxy.utils import hash_token
 
 from .auth_checks_organization import _user_is_org_admin
-from .auth_utils import _has_user_setup_sso
 
 
 class RouteChecks:
-
     @staticmethod
     def non_proxy_admin_allowed_routes_check(
         user_obj: Optional[LiteLLM_UserTable],
@@ -26,7 +23,6 @@ class RouteChecks:
         route: str,
         request: Request,
         valid_token: UserAPIKeyAuth,
-        api_key: str,
         request_data: dict,
     ):
         """
@@ -65,14 +61,11 @@ class RouteChecks:
                 pass
             elif route == "/team/info":
                 pass  # handled by function itself
-        elif _has_user_setup_sso() and route in LiteLLMRoutes.sso_only_routes.value:
-            pass
         elif (
             route in LiteLLMRoutes.global_spend_tracking_routes.value
             and getattr(valid_token, "permissions", None) is not None
             and "get_spend_routes" in getattr(valid_token, "permissions", [])
         ):
-
             pass
         elif _user_role == LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value:
             if RouteChecks.is_llm_api_route(route=route):
@@ -85,7 +78,6 @@ class RouteChecks:
             ):
                 # the Admin Viewer is only allowed to call /user/update for their own user_id and can only update
                 if route == "/user/update":
-
                     # Check the Request params are valid for PROXY_ADMIN_VIEW_ONLY
                     if request_data is not None and isinstance(request_data, dict):
                         _params_updated = request_data.keys()
@@ -181,20 +173,28 @@ class RouteChecks:
                 ):
                     return True
 
-        # Pass through Bedrock, VertexAI, and Cohere Routes
-        if "/bedrock/" in route:
+        if RouteChecks._is_azure_openai_route(route=route):
             return True
-        if "/vertex-ai/" in route:
-            return True
-        if "/gemini/" in route:
-            return True
-        if "/cohere/" in route:
-            return True
-        if "/langfuse/" in route:
-            return True
-        if "/anthropic/" in route:
-            return True
-        if "/azure/" in route:
+
+        for _llm_passthrough_route in LiteLLMRoutes.mapped_pass_through_routes.value:
+            if _llm_passthrough_route in route:
+                return True
+
+        return False
+
+    @staticmethod
+    def _is_azure_openai_route(route: str) -> bool:
+        """
+        Check if route is a route from AzureOpenAI SDK client
+
+        eg.
+        route='/openai/deployments/vertex_ai/gemini-1.5-flash/chat/completions'
+        """
+        # Add support for deployment and engine model paths
+        deployment_pattern = r"^/openai/deployments/[^/]+/[^/]+/chat/completions$"
+        engine_pattern = r"^/engines/[^/]+/chat/completions$"
+
+        if re.match(deployment_pattern, route) or re.match(engine_pattern, route):
             return True
         return False
 
@@ -236,3 +236,18 @@ class RouteChecks:
             RouteChecks._route_matches_pattern(route=route, pattern=allowed_route)
             for allowed_route in allowed_routes
         )  # Check pattern match
+
+    @staticmethod
+    def _is_assistants_api_request(request: Request) -> bool:
+        """
+        Returns True if `thread` or `assistant` is in the request path
+
+        Args:
+            request (Request): The request object
+
+        Returns:
+            bool: True if `thread` or `assistant` is in the request path, False otherwise
+        """
+        if "thread" in request.url.path or "assistant" in request.url.path:
+            return True
+        return False
