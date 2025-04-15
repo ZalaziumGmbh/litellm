@@ -33,7 +33,6 @@ def setup_mocks():
     ) as mock_logger, patch(
         "litellm.llms.azure.common_utils.select_azure_base_url_or_endpoint"
     ) as mock_select_url:
-
         # Configure mocks
         mock_litellm.AZURE_DEFAULT_API_VERSION = "2023-05-15"
         mock_litellm.enable_azure_ad_token_refresh = False
@@ -77,6 +76,33 @@ def test_initialize_with_api_key(setup_mocks):
     assert result["api_version"] == "2023-06-01"
     assert "azure_ad_token" in result
     assert result["azure_ad_token"] is None
+
+
+def test_initialize_with_tenant_credentials_env_var(setup_mocks, monkeypatch):
+    monkeypatch.setenv("AZURE_TENANT_ID", "test-tenant-id")
+    monkeypatch.setenv("AZURE_CLIENT_ID", "test-client-id")
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "test-client-secret")
+
+    result = BaseAzureLLM().initialize_azure_sdk_client(
+        litellm_params={},
+        api_key=None,
+        api_base="https://test.openai.azure.com",
+        model_name="gpt-4",
+        api_version=None,
+        is_async=False,
+    )
+
+    # Verify that get_azure_ad_token_from_entrata_id was called
+    setup_mocks["entrata_token"].assert_called_once_with(
+        tenant_id="test-tenant-id",
+        client_id="test-client-id",
+        client_secret="test-client-secret",
+    )
+
+    # Verify expected result
+    assert result["api_key"] is None
+    assert result["azure_endpoint"] == "https://test.openai.azure.com"
+    assert "azure_ad_token_provider" in result
 
 
 def test_initialize_with_tenant_credentials(setup_mocks):
@@ -151,8 +177,12 @@ def test_initialize_with_oidc_token(setup_mocks):
     assert result["azure_ad_token"] == "mock-oidc-token"
 
 
-def test_initialize_with_enable_token_refresh(setup_mocks):
+def test_initialize_with_enable_token_refresh(setup_mocks, monkeypatch):
+    litellm._turn_on_debug()
     # Enable token refresh
+    monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("AZURE_TENANT_ID", raising=False)
     setup_mocks["litellm"].enable_azure_ad_token_refresh = True
 
     # Test with token refresh enabled
@@ -172,8 +202,11 @@ def test_initialize_with_enable_token_refresh(setup_mocks):
     assert "azure_ad_token_provider" in result
 
 
-def test_initialize_with_token_refresh_error(setup_mocks):
+def test_initialize_with_token_refresh_error(setup_mocks, monkeypatch):
     # Enable token refresh but make it raise an error
+    monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("AZURE_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("AZURE_TENANT_ID", raising=False)
     setup_mocks["litellm"].enable_azure_ad_token_refresh = True
     setup_mocks["token_provider"].side_effect = ValueError("Token provider error")
 
@@ -302,6 +335,14 @@ async def test_ensure_initialize_azure_sdk_client_always_used(call_type):
             "custom_llm_provider": "azure",
             "file": MagicMock(),
             "purpose": "assistants",
+        },
+        "afile_content": {
+            "custom_llm_provider": "azure",
+            "file_id": "123",
+        },
+        "afile_delete": {
+            "custom_llm_provider": "azure",
+            "file_id": "123",
         },
     }
 
