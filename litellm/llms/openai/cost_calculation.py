@@ -119,7 +119,7 @@ def cost_per_second(
         prompt_cost = model_info["input_cost_per_second"] * duration
         completion_cost = 0.0
 
-    # zalazium fix
+    # zalazium fix (custom pricing)
     completion_cost = completion_cost * 7
 
     return prompt_cost, completion_cost

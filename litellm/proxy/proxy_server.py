@@ -4218,7 +4218,7 @@ async def audio_transcriptions(
             )
         )
 
-        # zalazium fix
+        # zalazium fix (remove timestamp)
         import re
         response.text = re.sub(r'\d+\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\n', '', response.text)
         response.text = re.sub(r'\n+', ' ', response.text)
