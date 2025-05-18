@@ -909,6 +909,7 @@ def completion_cost(  # noqa: PLR0915
                     StandardBuiltInToolCostTracking.get_cost_for_built_in_tools(
                         model=model,
                         response_object=completion_response,
+                        usage=cost_per_token_usage_object,
                         standard_built_in_tools_params=standard_built_in_tools_params,
                         custom_llm_provider=custom_llm_provider,
                     )
@@ -1154,6 +1155,10 @@ def default_image_cost_calculator(
             f"Model not found in cost map. Tried checking {models_to_check}"
         )
 
+    # zalazium fix (custom pricing)
+    pixel_price_euro = (3.3531189e-8) * 7
+    cost_info["input_cost_per_pixel"] = pixel_price_euro
+    
     return cost_info["input_cost_per_pixel"] * height * width * n
 
 
