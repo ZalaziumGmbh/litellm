@@ -21,7 +21,6 @@ Features:
     - ✅ [[BETA] AWS Key Manager v2 - Key Decryption](#beta-aws-key-manager---key-decryption)
     - ✅ IP address‑based access control lists
     - ✅ Track Request IP Address
-    - ✅ [Use LiteLLM keys/authentication on Pass Through Endpoints](pass_through#✨-enterprise---use-litellm-keysauthentication-on-pass-through-endpoints)
     - ✅ [Set Max Request Size / File Size on Requests](#set-max-request--response-size-on-litellm-proxy)
     - ✅ [Enforce Required Params for LLM Requests (ex. Reject requests missing ["metadata"]["generation_name"])](#enforce-required-params-for-llm-requests)
     - ✅ [Key Rotations](./virtual_keys.md#-key-rotations)
@@ -29,7 +28,6 @@ Features:
     - ✅ [Team Based Logging](./team_logging.md) - Allow each team to use their own Langfuse Project / custom callbacks
     - ✅ [Disable Logging for a Team](./team_logging.md#disable-logging-for-a-team) - Switch off all logging for a team/project (GDPR Compliance)
 - **Spend Tracking & Data Exports**
-    - ✅ [Tracking Spend for Custom Tags](#tracking-spend-for-custom-tags)
     - ✅ [Set USD Budgets Spend for Custom Tags](./provider_budget_routing#-tag-budgets)
     - ✅ [Set Model budgets for Virtual Keys](./users#-virtual-key-model-specific)
     - ✅ [Exporting LLM Logs to GCS Bucket, Azure Blob Storage](./proxy/bucket#🪣-logging-gcs-s3-buckets)
@@ -42,59 +40,6 @@ Features:
     - ✅ [Custom Branding + Routes on Swagger Docs](#swagger-docs---custom-routes--branding)
     - ✅ [Public Model Hub](#public-model-hub)
     - ✅ [Custom Email Branding](./email.md#customizing-email-branding)
-
-## Security
-
-### Audit Logs
-
-Store Audit logs for **Create, Update Delete Operations** done on `Teams` and `Virtual Keys`
-
-**Step 1** Switch on audit Logs 
-```shell
-litellm_settings:
-  store_audit_logs: true
-```
-
-Start the litellm proxy with this config
-
-**Step 2** Test it - Create a Team
-
-```shell
-curl --location 'http://0.0.0.0:4000/team/new' \
-    --header 'Authorization: Bearer sk-1234' \
-    --header 'Content-Type: application/json' \
-    --data '{
-        "max_budget": 2
-    }'
-```
-
-**Step 3** Expected Log
-
-```json
-{
- "id": "e1760e10-4264-4499-82cd-c08c86c8d05b",
- "updated_at": "2024-06-06T02:10:40.836420+00:00",
- "changed_by": "109010464461339474872",
- "action": "created",
- "table_name": "LiteLLM_TeamTable",
- "object_id": "82e725b5-053f-459d-9a52-867191635446",
- "before_value": null,
- "updated_values": {
-   "team_id": "82e725b5-053f-459d-9a52-867191635446",
-   "admins": [],
-   "members": [],
-   "members_with_roles": [
-     {
-       "role": "admin",
-       "user_id": "109010464461339474872"
-     }
-   ],
-   "max_budget": 2.0,
-   "models": [],
-   "blocked": false
- }
-}
-```
 
 
 ### Blocking web crawlers
@@ -385,174 +330,6 @@ curl --location 'http://0.0.0.0:4000/embeddings' \
 
 ## Spend Tracking
 
-### Custom Tags
-
-Requirements: 
-
-- Virtual Keys & a database should be set up, see [virtual keys](https://docs.litellm.ai/docs/proxy/virtual_keys)
-
-#### Usage - /chat/completions requests with request tags 
-
-
-<Tabs>
-<TabItem value="key" label="Set on Key">
-
-```bash
-curl -L -X POST 'http://0.0.0.0:4000/key/generate' \
--H 'Authorization: Bearer sk-1234' \
--H 'Content-Type: application/json' \
--d '{
-    "metadata": {
-        "tags": ["tag1", "tag2", "tag3"]
-    }
-}
-
-'
-```
-
-</TabItem>
-<TabItem value="team" label="Set on Team">
-
-```bash
-curl -L -X POST 'http://0.0.0.0:4000/team/new' \
--H 'Authorization: Bearer sk-1234' \
--H 'Content-Type: application/json' \
--d '{
-    "metadata": {
-        "tags": ["tag1", "tag2", "tag3"]
-    }
-}
-
-'
-```
-
-</TabItem>
-<TabItem value="openai" label="OpenAI Python v1.0.0+">
-
-Set `extra_body={"metadata": { }}` to `metadata` you want to pass
-
-```python
-import openai
-client = openai.OpenAI(
-    api_key="anything",
-    base_url="http://0.0.0.0:4000"
-)
-
-
-response = client.chat.completions.create(
-    model="gpt-3.5-turbo",
-    messages = [
-        {
-            "role": "user",
-            "content": "this is a test request, write a short poem"
-        }
-    ],
-    extra_body={
-        "metadata": {
-            "tags": ["model-anthropic-claude-v2.1", "app-ishaan-prod"] # 👈 Key Change
-        }
-    }
-)
-
-print(response)
-```
-</TabItem>
-
-
-<TabItem value="openai js" label="OpenAI JS">
-
-```js
-const openai = require('openai');
-
-async function runOpenAI() {
-  const client = new openai.OpenAI({
-    apiKey: 'sk-1234',
-    baseURL: 'http://0.0.0.0:4000'
-  });
-
-  try {
-    const response = await client.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      messages: [
-        {
-          role: 'user',
-          content: "this is a test request, write a short poem"
-        },
-      ],
-      metadata: {
-        tags: ["model-anthropic-claude-v2.1", "app-ishaan-prod"] // 👈 Key Change
-      }
-    });
-    console.log(response);
-  } catch (error) {
-    console.log("got this exception from server");
-    console.error(error);
-  }
-}
-
-// Call the asynchronous function
-runOpenAI();
-```
-</TabItem>
-
-<TabItem value="Curl" label="Curl Request">
-
-Pass `metadata` as part of the request body
-
-```shell
-curl --location 'http://0.0.0.0:4000/chat/completions' \
-    --header 'Content-Type: application/json' \
-    --data '{
-    "model": "gpt-3.5-turbo",
-    "messages": [
-        {
-        "role": "user",
-        "content": "what llm are you"
-        }
-    ],
-    "metadata": {"tags": ["model-anthropic-claude-v2.1", "app-ishaan-prod"]}
-}'
-```
-</TabItem>
-<TabItem value="langchain" label="Langchain">
-
-```python
-from langchain.chat_models import ChatOpenAI
-from langchain.prompts.chat import (
-    ChatPromptTemplate,
-    HumanMessagePromptTemplate,
-    SystemMessagePromptTemplate,
-)
-from langchain.schema import HumanMessage, SystemMessage
-
-chat = ChatOpenAI(
-    openai_api_base="http://0.0.0.0:4000",
-    model = "gpt-3.5-turbo",
-    temperature=0.1,
-    extra_body={
-        "metadata": {
-            "tags": ["model-anthropic-claude-v2.1", "app-ishaan-prod"]
-        }
-    }
-)
-
-messages = [
-    SystemMessage(
-        content="You are a helpful assistant that im using to make a test request to."
-    ),
-    HumanMessage(
-        content="test from litellm. tell me why it's amazing in 1 sentence"
-    ),
-]
-response = chat(messages)
-
-print(response)
-```
-
-</TabItem>
-</Tabs>
-
-
 #### Viewing Spend per tag
 
 #### `/spend/tags` Request Format 
@@ -662,6 +439,33 @@ response = client.chat.completions.create(
 
 print(response)
 ```
+
+**Using Headers:**
+
+```python
+import openai
+client = openai.OpenAI(
+    api_key="sk-1234",
+    base_url="http://0.0.0.0:4000"
+)
+
+# Pass spend logs metadata via headers
+response = client.chat.completions.create(
+    model="gpt-3.5-turbo",
+    messages = [
+        {
+            "role": "user",
+            "content": "this is a test request, write a short poem"
+        }
+    ],
+    extra_headers={
+        "x-litellm-spend-logs-metadata": '{"user_id": "12345", "project_id": "proj_abc", "request_type": "chat_completion"}'
+    }
+)
+
+print(response)
+```
+
 </TabItem>
 
 
@@ -701,6 +505,43 @@ async function runOpenAI() {
 // Call the asynchronous function
 runOpenAI();
 ```
+
+**Using Headers:**
+
+```js
+const openai = require('openai');
+
+async function runOpenAI() {
+  const client = new openai.OpenAI({
+    apiKey: 'sk-1234',
+    baseURL: 'http://0.0.0.0:4000'
+  });
+
+  try {
+    const response = await client.chat.completions.create({
+      model: 'gpt-3.5-turbo',
+      messages: [
+        {
+          role: 'user',
+          content: "this is a test request, write a short poem"
+        },
+      ]
+    }, {
+      headers: {
+        'x-litellm-spend-logs-metadata': '{"user_id": "12345", "project_id": "proj_abc", "request_type": "chat_completion"}'
+      }
+    });
+    console.log(response);
+  } catch (error) {
+    console.log("got this exception from server");
+    console.error(error);
+  }
+}
+
+// Call the asynchronous function
+runOpenAI();
+```
+
 </TabItem>
 
 <TabItem value="Curl" label="Curl Request">
@@ -725,6 +566,29 @@ curl --location 'http://0.0.0.0:4000/chat/completions' \
     }
 }'
 ```
+
+</TabItem>
+
+<TabItem value="headers" label="Using Headers">
+
+Pass `x-litellm-spend-logs-metadata` as a request header with JSON string
+
+```shell
+curl --location 'http://0.0.0.0:4000/chat/completions' \
+    --header 'Content-Type: application/json' \
+    --header 'Authorization: Bearer sk-1234' \
+    --header 'x-litellm-spend-logs-metadata: {"user_id": "12345", "project_id": "proj_abc", "request_type": "chat_completion"}' \
+    --data '{
+    "model": "gpt-3.5-turbo",
+    "messages": [
+        {
+        "role": "user",
+        "content": "what llm are you"
+        }
+    ]
+}'
+```
+
 </TabItem>
 <TabItem value="langchain" label="Langchain">
 

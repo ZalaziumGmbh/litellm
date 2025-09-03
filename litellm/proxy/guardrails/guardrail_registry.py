@@ -4,7 +4,7 @@ import importlib
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, cast
+from typing import Dict, List, Optional, Type, cast
 
 import litellm
 from litellm._logging import verbose_proxy_logger
@@ -21,10 +21,7 @@ from litellm.types.guardrails import (
 )
 
 from .guardrail_initializers import (
-    initialize_aim,
-    initialize_aporia,
     initialize_bedrock,
-    initialize_guardrails_ai,
     initialize_hide_secrets,
     initialize_lakera,
     initialize_lakera_v2,
@@ -32,15 +29,164 @@ from .guardrail_initializers import (
 )
 
 guardrail_initializer_registry = {
-    SupportedGuardrailIntegrations.APORIA.value: initialize_aporia,
     SupportedGuardrailIntegrations.BEDROCK.value: initialize_bedrock,
     SupportedGuardrailIntegrations.LAKERA.value: initialize_lakera,
     SupportedGuardrailIntegrations.LAKERA_V2.value: initialize_lakera_v2,
-    SupportedGuardrailIntegrations.AIM.value: initialize_aim,
     SupportedGuardrailIntegrations.PRESIDIO.value: initialize_presidio,
     SupportedGuardrailIntegrations.HIDE_SECRETS.value: initialize_hide_secrets,
-    SupportedGuardrailIntegrations.GURDRAILS_AI.value: initialize_guardrails_ai,
 }
+
+guardrail_class_registry: Dict[str, Type[CustomGuardrail]] = {}
+
+
+def get_guardrail_initializer_from_hooks():
+    """
+    Get guardrail initializers by discovering them from the guardrail_hooks directory structure.
+
+    Scans the guardrail_hooks directory for subdirectories containing __init__.py files
+    with either guardrail_initializer_registry or initialize_guardrail functions.
+
+    Returns:
+        Dict[str, Callable]: A dictionary mapping guardrail types to their initializer functions
+    """
+    discovered_initializers = {}
+
+    try:
+        # Get the path to the guardrail_hooks directory
+        current_dir = os.path.dirname(__file__)
+        hooks_dir = os.path.join(current_dir, "guardrail_hooks")
+
+        if not os.path.exists(hooks_dir):
+            verbose_proxy_logger.debug("guardrail_hooks directory not found")
+            return discovered_initializers
+
+        # Scan each subdirectory in guardrail_hooks
+        for item in os.listdir(hooks_dir):
+            item_path = os.path.join(hooks_dir, item)
+
+            # Skip files and __pycache__ directories
+            if not os.path.isdir(item_path) or item.startswith("__"):
+                continue
+
+            # Check if the directory has an __init__.py file
+            init_file = os.path.join(item_path, "__init__.py")
+            if not os.path.exists(init_file):
+                continue
+
+            module_path = f"litellm.proxy.guardrails.guardrail_hooks.{item}"
+            try:
+                # Import the module
+                verbose_proxy_logger.debug(f"Discovering guardrails in: {module_path}")
+
+                module = importlib.import_module(module_path)
+
+                # Check for guardrail_initializer_registry dictionary
+                if hasattr(module, "guardrail_initializer_registry"):
+                    registry = getattr(module, "guardrail_initializer_registry")
+                    if isinstance(registry, dict):
+                        discovered_initializers.update(registry)
+                        verbose_proxy_logger.debug(
+                            f"Found guardrail_initializer_registry in {module_path}: {list(registry.keys())}"
+                        )
+
+                # Check for standalone initialize_guardrail function (fallback for directory-based guardrails)
+                elif hasattr(module, "initialize_guardrail"):
+                    # For directories with just initialize_guardrail, use the directory name as the key
+                    initialize_fn = getattr(module, "initialize_guardrail")
+                    discovered_initializers[item] = initialize_fn
+                    verbose_proxy_logger.debug(
+                        f"Found initialize_guardrail function in {module_path}"
+                    )
+
+            except ImportError as e:
+                verbose_proxy_logger.error(f"Could not import {module_path}: {e}")
+                continue
+            except Exception as e:
+                verbose_proxy_logger.error(f"Error processing {module_path}: {e}")
+                continue
+
+        verbose_proxy_logger.debug(
+            f"Discovered {len(discovered_initializers)} guardrail initializers: {list(discovered_initializers.keys())}"
+        )
+
+    except Exception as e:
+        verbose_proxy_logger.error(f"Error discovering guardrail initializers: {e}")
+
+    return discovered_initializers
+
+
+def get_guardrail_class_from_hooks():
+    """
+    Get guardrail classes by discovering them from the guardrail_hooks directory structure.
+    """
+    """
+    Get guardrail initializers by discovering them from the guardrail_hooks directory structure.
+
+    Scans the guardrail_hooks directory for subdirectories containing __init__.py files
+    with either guardrail_initializer_registry or initialize_guardrail functions.
+
+    Returns:
+        Dict[str, Callable]: A dictionary mapping guardrail types to their initializer functions
+    """
+    discovered_classes = {}
+
+    try:
+        # Get the path to the guardrail_hooks directory
+        current_dir = os.path.dirname(__file__)
+        hooks_dir = os.path.join(current_dir, "guardrail_hooks")
+
+        if not os.path.exists(hooks_dir):
+            verbose_proxy_logger.debug("guardrail_hooks directory not found")
+            return discovered_classes
+
+        # Scan each subdirectory in guardrail_hooks
+        for item in os.listdir(hooks_dir):
+            item_path = os.path.join(hooks_dir, item)
+
+            # Skip files and __pycache__ directories
+            if not os.path.isdir(item_path) or item.startswith("__"):
+                continue
+
+            # Check if the directory has an __init__.py file
+            init_file = os.path.join(item_path, "__init__.py")
+
+            if not os.path.exists(init_file):
+                continue
+
+            module_path = f"litellm.proxy.guardrails.guardrail_hooks.{item}"
+
+            try:
+                # Import the module
+                verbose_proxy_logger.debug(f"Discovering guardrails in: {module_path}")
+
+                module = importlib.import_module(module_path)
+
+                # Check for guardrail_initializer_registry dictionary
+                if hasattr(module, "guardrail_class_registry"):
+                    registry = getattr(module, "guardrail_class_registry")
+                    if isinstance(registry, dict):
+                        discovered_classes.update(registry)
+
+            except ImportError as e:
+                verbose_proxy_logger.debug(f"Could not import {module_path}: {e}")
+                continue
+            except Exception as e:
+                verbose_proxy_logger.exception(f"Error processing {module_path}: {e}")
+                continue
+
+    except Exception as e:
+        verbose_proxy_logger.error(f"Error discovering guardrail initializers: {e}")
+
+    return discovered_classes
+
+
+guardrail_class_registry.update(get_guardrail_class_from_hooks())
+
+
+# Merge with dynamically discovered guardrail initializers
+_discovered_initializers = get_guardrail_initializer_from_hooks()
+
+guardrail_initializer_registry.update(_discovered_initializers)
 
 
 class GuardrailRegistry:
@@ -165,7 +311,7 @@ class GuardrailRegistry:
 
             guardrails: List[Guardrail] = []
             for guardrail in guardrails_from_db:
-                guardrails.append(Guardrail(**(dict(guardrail))))
+                guardrails.append(Guardrail(**(dict(guardrail))))  # type: ignore
 
             return guardrails
         except Exception as e:
@@ -185,7 +331,7 @@ class GuardrailRegistry:
             if not guardrail:
                 return None
 
-            return Guardrail(**(dict(guardrail)))
+            return Guardrail(**(dict(guardrail)))  # type: ignore
         except Exception as e:
             raise Exception(f"Error getting guardrail from DB: {str(e)}")
 
@@ -203,7 +349,7 @@ class GuardrailRegistry:
             if not guardrail:
                 return None
 
-            return Guardrail(**(dict(guardrail)))
+            return Guardrail(**(dict(guardrail)))  # type: ignore
         except Exception as e:
             raise Exception(f"Error getting guardrail from DB: {str(e)}")
 
@@ -226,7 +372,7 @@ class InMemoryGuardrailHandler:
 
     def initialize_guardrail(
         self,
-        guardrail: Dict,
+        guardrail: Guardrail,
         config_file_path: Optional[str] = None,
     ) -> Optional[Guardrail]:
         """
@@ -235,6 +381,7 @@ class InMemoryGuardrailHandler:
         Returns a Guardrail object if the guardrail is initialized successfully
         """
         guardrail_id = guardrail.get("guardrail_id") or str(uuid.uuid4())
+        guardrail["guardrail_id"] = guardrail_id
         if guardrail_id in self.IN_MEMORY_GUARDRAILS:
             verbose_proxy_logger.debug(
                 "guardrail_id already exists in IN_MEMORY_GUARDRAILS"
@@ -245,7 +392,10 @@ class InMemoryGuardrailHandler:
         litellm_params_data = guardrail["litellm_params"]
         verbose_proxy_logger.debug("litellm_params= %s", litellm_params_data)
 
-        litellm_params = LitellmParams(**litellm_params_data)
+        if isinstance(litellm_params_data, dict):
+            litellm_params = LitellmParams(**litellm_params_data)
+        else:
+            litellm_params = litellm_params_data
 
         if (
             "category_thresholds" in litellm_params_data
@@ -265,6 +415,7 @@ class InMemoryGuardrailHandler:
             litellm_params.api_base = str(get_secret(litellm_params.api_base))
 
         guardrail_type = litellm_params.guardrail
+
         if guardrail_type is None:
             raise ValueError("guardrail_type is required")
 
@@ -273,8 +424,8 @@ class InMemoryGuardrailHandler:
         if initializer:
             custom_guardrail_callback = initializer(litellm_params, guardrail)
         elif isinstance(guardrail_type, str) and "." in guardrail_type:
-            self.initialize_custom_guardrail(
-                guardrail=guardrail,
+            custom_guardrail_callback = self.initialize_custom_guardrail(
+                guardrail=cast(dict, guardrail),
                 guardrail_type=guardrail_type,
                 litellm_params=litellm_params,
                 config_file_path=config_file_path,
@@ -288,8 +439,6 @@ class InMemoryGuardrailHandler:
             litellm_params=litellm_params,
         )
 
-        guardrail_id = parsed_guardrail.get("guardrail_id") or str(uuid.uuid4())
-
         # store references to the guardrail in memory
         self.IN_MEMORY_GUARDRAILS[guardrail_id] = parsed_guardrail
         self.guardrail_id_to_custom_guardrail[guardrail_id] = custom_guardrail_callback
@@ -302,7 +451,7 @@ class InMemoryGuardrailHandler:
         guardrail_type: str,
         litellm_params: LitellmParams,
         config_file_path: Optional[str] = None,
-    ) -> None:
+    ) -> Optional[CustomGuardrail]:
         """
         Initialize a Custom Guardrail from a python file
 
@@ -348,6 +497,8 @@ class InMemoryGuardrailHandler:
         )
         litellm.logging_callback_manager.add_litellm_callback(_guardrail_callback)  # type: ignore
 
+        return _guardrail_callback
+
     def update_in_memory_guardrail(
         self, guardrail_id: str, guardrail: Guardrail
     ) -> None:
@@ -375,6 +526,18 @@ class InMemoryGuardrailHandler:
         Delete a guardrail in memory
         """
         self.IN_MEMORY_GUARDRAILS.pop(guardrail_id, None)
+
+    def list_in_memory_guardrails(self) -> List[Guardrail]:
+        """
+        List all guardrails in memory
+        """
+        return list(self.IN_MEMORY_GUARDRAILS.values())
+
+    def get_guardrail_by_id(self, guardrail_id: str) -> Optional[Guardrail]:
+        """
+        Get a guardrail by its ID from memory
+        """
+        return self.IN_MEMORY_GUARDRAILS.get(guardrail_id)
 
 
 ########################################################
