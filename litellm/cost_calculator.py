@@ -1570,11 +1570,6 @@ def default_image_cost_calculator(
         raise Exception(
             f"Model not found in cost map. Tried checking {models_to_check}"
         )
-
-    # zalazium fix (custom pricing)
-    pixel_price_euro = (3.3531189e-8) * 7
-    cost_info["input_cost_per_pixel"] = pixel_price_euro
-    
     return cost_info["input_cost_per_pixel"] * height * width * n
 
 
