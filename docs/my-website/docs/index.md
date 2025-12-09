@@ -7,8 +7,8 @@ https://github.com/BerriAI/litellm
 
 ## **Call 100+ LLMs using the OpenAI Input/Output Format**
 
-- Translate inputs to provider's `completion`, `embedding`, and `image_generation` endpoints
-- [Consistent output](https://docs.litellm.ai/docs/completion/output), text responses will always be available at `['choices'][0]['message']['content']`
+- Translate inputs to provider's endpoints (`/chat/completions`, `/responses`, `/embeddings`, `/images`, `/audio`, `/batches`, and more)
+- [Consistent output](https://docs.litellm.ai/docs/supported_endpoints) - same response format regardless of which provider you use
 - Retry/fallback logic across multiple deployments (e.g. Azure/OpenAI) - [Router](https://docs.litellm.ai/docs/routing)
 - Track spend & set budgets per project [LiteLLM Proxy Server](https://docs.litellm.ai/docs/simple_proxy)
 
@@ -245,13 +245,13 @@ response = completion(
 
 </Tabs>
 
-### Response Format (OpenAI Format)
+### Response Format (OpenAI Chat Completions Format)
 
 ```json
 {
     "id": "chatcmpl-565d891b-a42e-4c39-8d14-82a1f5208885",
     "created": 1734366691,
-    "model": "claude-3-sonnet-20240229",
+    "model": "gpt-4o-2024-08-06",
     "object": "chat.completion",
     "system_fingerprint": null,
     "choices": [
@@ -514,16 +514,32 @@ response = completion(
 LiteLLM maps exceptions across all supported providers to the OpenAI exceptions. All our exceptions inherit from OpenAI's exception types, so any error-handling you have for that, should work out of the box with LiteLLM.
 
 ```python
-from openai.error import OpenAIError
+import litellm
 from litellm import completion
+import os
 
 os.environ["ANTHROPIC_API_KEY"] = "bad-key"
 try:
-    # some code
-    completion(model="claude-instant-1", messages=[{"role": "user", "content": "Hey, how's it going?"}])
-except OpenAIError as e:
-    print(e)
+    completion(model="anthropic/claude-instant-1", messages=[{"role": "user", "content": "Hey, how's it going?"}])
+except litellm.AuthenticationError as e:
+    # Thrown when the API key is invalid
+    print(f"Authentication failed: {e}")
+except litellm.RateLimitError as e:
+    # Thrown when you've exceeded your rate limit
+    print(f"Rate limited: {e}")
+except litellm.APIError as e:
+    # Thrown for general API errors
+    print(f"API error: {e}")
 ```
+### See How LiteLLM Transforms Your Requests
+
+Want to understand how LiteLLM parses and normalizes your LLM API requests? Use the `/utils/transform_request` endpoint to see exactly how your request is transformed internally.
+
+You can try it out now directly on our Demo App!
+Go to the [LiteLLM API docs for transform_request](https://litellm-api.up.railway.app/#/llm%20utils/transform_request_utils_transform_request_post)
+
+LiteLLM will show you the normalized, provider-agnostic version of your request. This is useful for debugging, learning, and understanding how LiteLLM handles different providers and options.
+
 
 ### Logging Observability - Log LLM Input/Output ([Docs](https://docs.litellm.ai/docs/observability/callbacks))
 LiteLLM exposes pre defined callbacks to send data to Lunary, MLflow, Langfuse, Helicone, Promptlayer, Traceloop, Slack
