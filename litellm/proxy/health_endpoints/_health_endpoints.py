@@ -34,6 +34,23 @@ from litellm.proxy.health_check import (
 #### Health ENDPOINTS ####
 
 router = APIRouter()
+services = Union[
+    Literal[
+        "slack_budget_alerts",
+        "langfuse",
+        "langfuse_otel",
+        "slack",
+        "openmeter",
+        "webhook",
+        "email",
+        "braintrust",
+        "datadog",
+        "generic_api",
+        "arize",
+        "sqs"
+    ],
+    str,
+]
 
 
 @router.get(
@@ -64,20 +81,7 @@ async def test_endpoint(request: Request):
 )
 async def health_services_endpoint(  # noqa: PLR0915
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
-    service: Union[
-        Literal[
-            "slack_budget_alerts",
-            "langfuse",
-            "slack",
-            "openmeter",
-            "webhook",
-            "email",
-            "braintrust",
-            "datadog",
-            "generic_api",
-        ],
-        str,
-    ] = fastapi.Query(description="Specify the service being hit."),
+    service: services = fastapi.Query(description="Specify the service being hit."),
 ):
     """
     Use this admin-only endpoint to check if the service is healthy.
@@ -104,6 +108,7 @@ async def health_services_endpoint(  # noqa: PLR0915
             "slack_budget_alerts",
             "email",
             "langfuse",
+            "langfuse_otel",
             "slack",
             "openmeter",
             "webhook",
@@ -113,11 +118,13 @@ async def health_services_endpoint(  # noqa: PLR0915
             "langsmith",
             "datadog",
             "generic_api",
+            "arize",
+            "sqs"
         ]:
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "error": f"Service must be in list. Service={service}. List={['slack_budget_alerts']}"
+                    "error": f"Service must be in list. Service={service} not in {services}"
                 },
             )
 
@@ -150,6 +157,19 @@ async def health_services_endpoint(  # noqa: PLR0915
                     else "Datadog is healthy"
                 ),
             }
+        elif service == "arize":
+            from litellm.integrations.arize.arize import ArizeLogger
+
+            arize_logger = ArizeLogger()
+            response = await arize_logger.async_health_check()
+            return {
+                "status": response["status"],
+                "message": (
+                    response["error_message"]
+                    if response["status"] == "unhealthy"
+                    else "Arize is healthy"
+                ),
+            }
         elif service == "langfuse":
             from litellm.integrations.langfuse.langfuse import LangFuseLogger
 
@@ -180,6 +200,14 @@ async def health_services_endpoint(  # noqa: PLR0915
                 type="user_budget",
                 user_info=user_info,
             )
+        elif service == "sqs":
+            from litellm.integrations.sqs import SQSLogger
+            sqs_logger = SQSLogger()
+            response = await sqs_logger.async_health_check()
+            return {
+                "status": response["status"],
+                "message": response["error_message"],
+            }
 
         if service == "slack" or service == "slack_budget_alerts":
             if "slack" in general_settings.get("alerting", []):
@@ -365,6 +393,211 @@ async def _save_health_check_to_db(
     except Exception as db_error:
         verbose_proxy_logger.warning(
             f"Failed to save health check to database for model {model_name}: {db_error}"
+        )
+        # Continue execution - don't let database save failure break health checks
+
+
+def _build_model_param_to_info_mapping(model_list: list) -> dict:
+    """
+    Build a mapping from model parameter to model info (model_name, model_id).
+    
+    Multiple models might share the same model parameter, so we use a list.
+    
+    Args:
+        model_list: List of model configurations
+        
+    Returns:
+        Dictionary mapping model parameter to list of model info dicts
+    """
+    model_param_to_info: dict = {}
+    for model in model_list:
+        model_info = model.get("model_info", {})
+        model_name = model.get("model_name")
+        model_id = model_info.get("id")
+        litellm_params = model.get("litellm_params", {})
+        model_param = litellm_params.get("model")
+        
+        if model_param and model_name:
+            if model_param not in model_param_to_info:
+                model_param_to_info[model_param] = []
+            model_param_to_info[model_param].append({
+                "model_name": model_name,
+                "model_id": model_id,
+            })
+    return model_param_to_info
+
+
+def _aggregate_health_check_results(
+    model_param_to_info: dict,
+    healthy_endpoints: list,
+    unhealthy_endpoints: list,
+) -> dict:
+    """
+    Aggregate health check results per unique model.
+    
+    Uses (model_id, model_name) as key, or (None, model_name) if model_id is None.
+    
+    Args:
+        model_param_to_info: Mapping from model parameter to model info
+        healthy_endpoints: List of healthy endpoint results
+        unhealthy_endpoints: List of unhealthy endpoint results
+        
+    Returns:
+        Dictionary mapping (model_id, model_name) to aggregated health check results
+    """
+    model_results = {}
+    
+    # Process healthy endpoints
+    for endpoint in healthy_endpoints:
+        model_param = endpoint.get("model")
+        if model_param and model_param in model_param_to_info:
+            for model_info in model_param_to_info[model_param]:
+                key = (model_info["model_id"], model_info["model_name"])
+                if key not in model_results:
+                    model_results[key] = {
+                        "model_name": model_info["model_name"],
+                        "model_id": model_info["model_id"],
+                        "healthy_count": 0,
+                        "unhealthy_count": 0,
+                        "error_message": None,
+                    }
+                model_results[key]["healthy_count"] += 1
+    
+    # Process unhealthy endpoints
+    for endpoint in unhealthy_endpoints:
+        model_param = endpoint.get("model")
+        error_message = endpoint.get("error")
+        if model_param and model_param in model_param_to_info:
+            for model_info in model_param_to_info[model_param]:
+                key = (model_info["model_id"], model_info["model_name"])
+                if key not in model_results:
+                    model_results[key] = {
+                        "model_name": model_info["model_name"],
+                        "model_id": model_info["model_id"],
+                        "healthy_count": 0,
+                        "unhealthy_count": 0,
+                        "error_message": None,
+                    }
+                model_results[key]["unhealthy_count"] += 1
+                # Use the first error message encountered
+                if not model_results[key]["error_message"] and error_message:
+                    model_results[key]["error_message"] = str(error_message)[:500]
+    
+    return model_results
+
+
+async def _save_health_check_results_if_changed(
+    prisma_client,
+    model_results: dict,
+    latest_checks_map: dict,
+    start_time: float,
+    checked_by: Optional[str] = None,
+):
+    """
+    Save health check results to database, but only if status changed or >1 hour since last save.
+    
+    OPTIMIZATION: Only saves to database if the status has changed from the last saved check.
+    This dramatically reduces database writes when health status remains stable.
+    
+    - Stable systems: ~1 write/hour per model (instead of 12 writes/hour with 5-min intervals)
+    - Status changes: Immediate write (no delay)
+    - Result: ~92% reduction in DB writes for stable systems, while maintaining real-time updates on changes
+    
+    Args:
+        prisma_client: Database client
+        model_results: Dictionary of aggregated health check results per model
+        latest_checks_map: Dictionary mapping model_id/model_name to latest health check
+        start_time: Start time of health check for calculating response time
+        checked_by: Identifier for who/what performed the check
+    """
+    for result in model_results.values():
+        new_status = "healthy" if result["healthy_count"] > 0 else "unhealthy"
+        
+        # Check if we should save this result
+        should_save = True
+        lookup_key = result["model_id"] if result["model_id"] else result["model_name"]
+        if lookup_key in latest_checks_map:
+            last_check = latest_checks_map[lookup_key]
+            # Only save if status changed or if it's been a while since last check
+            if last_check.status == new_status:
+                # Check if last check was recent (within 1 hour)
+                if last_check.checked_at:
+                    from datetime import datetime, timezone
+                    time_since_last_check = (
+                        datetime.now(timezone.utc) - last_check.checked_at
+                    ).total_seconds()
+                    # Only skip if status unchanged AND checked recently (within 1 hour)
+                    # This ensures we still get periodic updates even if status is stable
+                    if time_since_last_check < 3600:  # 1 hour threshold
+                        should_save = False
+        
+        if should_save:
+            asyncio.create_task(
+                prisma_client.save_health_check_result(
+                    model_name=result["model_name"],
+                    model_id=result["model_id"],
+                    status=new_status,
+                    healthy_count=result["healthy_count"],
+                    unhealthy_count=result["unhealthy_count"],
+                    error_message=result["error_message"],
+                    response_time_ms=(time.time() - start_time) * 1000,
+                    details=None,
+                    checked_by=checked_by,
+                )
+            )
+
+
+async def _save_background_health_checks_to_db(
+    prisma_client,
+    model_list: list,
+    healthy_endpoints: list,
+    unhealthy_endpoints: list,
+    start_time: float,
+    checked_by: Optional[str] = None,
+):
+    """
+    Save background health check results to database for each model.
+    
+    Maps health check endpoints back to their original models to get model_name and model_id.
+    Aggregates results per unique model (by model_id if available, otherwise model_name).
+    
+    OPTIMIZATION: Only saves to database if the status has changed from the last saved check.
+    This dramatically reduces database writes when health status remains stable.
+    """
+    if prisma_client is None:
+        return
+    
+    try:
+        # Step 1: Build mapping from model parameter to model info
+        model_param_to_info = _build_model_param_to_info_mapping(model_list)
+        
+        # Step 2: Aggregate health check results per unique model
+        model_results = _aggregate_health_check_results(
+            model_param_to_info,
+            healthy_endpoints,
+            unhealthy_endpoints,
+        )
+        
+        # Step 3: Get latest health checks for all models in one query to compare status
+        latest_checks = await prisma_client.get_all_latest_health_checks()
+        latest_checks_map = {}
+        for check in latest_checks:
+            # Use model_id as primary key, fallback to model_name
+            key = check.model_id if check.model_id else check.model_name
+            if key not in latest_checks_map:
+                latest_checks_map[key] = check
+        
+        # Step 4: Save aggregated results, but only if status changed
+        await _save_health_check_results_if_changed(
+            prisma_client,
+            model_results,
+            latest_checks_map,
+            start_time,
+            checked_by,
+        )
+    except Exception as db_error:
+        verbose_proxy_logger.warning(
+            f"Failed to save background health checks to database: {db_error}"
         )
         # Continue execution - don't let database save failure break health checks
 
@@ -605,6 +838,53 @@ async def latest_health_checks_endpoint(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to retrieve latest health checks: {str(e)}"},
+        )
+
+
+@router.get(
+    "/health/shared-status", tags=["health"], dependencies=[Depends(user_api_key_auth)]
+)
+async def shared_health_check_status_endpoint(
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+):
+    """
+    Get the status of shared health check coordination across pods.
+
+    Returns information about Redis connectivity, lock status, and cache status.
+    """
+    from litellm.proxy.proxy_server import redis_usage_cache, use_shared_health_check
+
+    if not use_shared_health_check:
+        return {
+            "shared_health_check_enabled": False,
+            "message": "Shared health check is not enabled",
+        }
+
+    if redis_usage_cache is None:
+        return {
+            "shared_health_check_enabled": True,
+            "redis_available": False,
+            "message": "Redis is not configured",
+        }
+
+    try:
+        from litellm.proxy.health_check_utils.shared_health_check_manager import (
+            SharedHealthCheckManager,
+        )
+
+        shared_health_manager = SharedHealthCheckManager(
+            redis_cache=redis_usage_cache,
+        )
+
+        health_status = await shared_health_manager.get_health_check_status()
+        return {"shared_health_check_enabled": True, "status": health_status}
+    except Exception as e:
+        verbose_proxy_logger.error(f"Error getting shared health check status: {e}")
+        raise HTTPException(
+            status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": f"Failed to retrieve shared health check status: {str(e)}"
+            },
         )
 
 
@@ -860,14 +1140,21 @@ async def test_model_connection(
             "audio_speech",
             "audio_transcription",
             "image_generation",
+            "video_generation",
             "batch",
             "rerank",
             "realtime",
+            "responses",
+            "ocr",
         ]
     ] = fastapi.Body("chat", description="The mode to test the model with"),
     litellm_params: Dict = fastapi.Body(
         None,
         description="Parameters for litellm.completion, litellm.embedding for the health check",
+    ),
+    model_info: Dict = fastapi.Body(
+        None,
+        description="Model info for the health check",
     ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
@@ -897,7 +1184,30 @@ async def test_model_connection(
     Returns:
         dict: A dictionary containing the health check result with either success information or error details.
     """
+    from litellm.proxy._types import CommonProxyErrors
+    from litellm.proxy.management_endpoints.model_management_endpoints import (
+        ModelManagementAuthChecks,
+    )
+    from litellm.proxy.proxy_server import premium_user, prisma_client
+    from litellm.types.router import Deployment, LiteLLM_Params
+
     try:
+        if prisma_client is None:
+            raise HTTPException(
+                status_code=500,
+                detail={"error": CommonProxyErrors.db_not_connected_error.value},
+            )
+        ## Auth check
+        await ModelManagementAuthChecks.can_user_make_model_call(
+            model_params=Deployment(
+                model_name="test_model",
+                litellm_params=LiteLLM_Params(**litellm_params),
+                model_info=model_info,
+            ),
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+            premium_user=premium_user,
+        )
         # Include health_check_params if provided
         litellm_params = _update_litellm_params_for_health_check(
             model_info={},
@@ -925,11 +1235,12 @@ async def test_model_connection(
             "result": cleaned_result,
         }
 
+    except HTTPException as e:
+        raise e
     except Exception as e:
-        verbose_proxy_logger.error(
+        verbose_proxy_logger.debug(
             f"litellm.proxy.health_endpoints.test_model_connection(): Exception occurred - {str(e)}"
         )
-        verbose_proxy_logger.debug(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": f"Failed to test connection: {str(e)}"},
