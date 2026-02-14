@@ -1,21 +1,20 @@
-import React, { useState, useEffect, useMemo } from "react";
-import { Form, Typography, Select, Modal, Tag, Steps } from "antd";
-import { Button, TextInput } from "@tremor/react";
-import {
-  guardrail_provider_map,
-  shouldRenderPIIConfigSettings,
-  shouldRenderContentFilterConfigSettings,
-  guardrailLogoMap,
-  populateGuardrailProviders,
-  populateGuardrailProviderMap,
-  getGuardrailProviders,
-} from "./guardrail_info_helpers";
-import { createGuardrailCall, getGuardrailUISettings, getGuardrailProviderSpecificParams } from "../networking";
-import PiiConfiguration from "./pii_configuration";
-import GuardrailProviderFields from "./guardrail_provider_fields";
-import GuardrailOptionalParams from "./guardrail_optional_params";
+import { Button, Form, Input, Modal, Select, Steps, Tag, Typography } from "antd";
+import React, { useEffect, useMemo, useState } from "react";
 import NotificationsManager from "../molecules/notifications_manager";
+import { createGuardrailCall, getGuardrailProviderSpecificParams, getGuardrailUISettings } from "../networking";
 import ContentFilterConfiguration from "./content_filter/ContentFilterConfiguration";
+import {
+  getGuardrailProviders,
+  guardrail_provider_map,
+  guardrailLogoMap,
+  populateGuardrailProviderMap,
+  populateGuardrailProviders,
+  shouldRenderContentFilterConfigSettings,
+  shouldRenderPIIConfigSettings,
+} from "./guardrail_info_helpers";
+import GuardrailOptionalParams from "./guardrail_optional_params";
+import GuardrailProviderFields from "./guardrail_provider_fields";
+import PiiConfiguration from "./pii_configuration";
 import ToolPermissionRulesEditor, {
   ToolPermissionConfig,
 } from "./tool_permission/ToolPermissionRulesEditor";
@@ -58,6 +57,12 @@ interface GuardrailSettings {
     }>;
     pattern_categories: string[];
     supported_actions: string[];
+    content_categories?: Array<{
+      name: string;
+      display_name: string;
+      description: string;
+      default_action: string;
+    }>;
   };
 }
 
@@ -103,6 +108,7 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
   // Content Filter state
   const [selectedPatterns, setSelectedPatterns] = useState<any[]>([]);
   const [blockedWords, setBlockedWords] = useState<any[]>([]);
+  const [selectedContentCategories, setSelectedContentCategories] = useState<any[]>([]);
   const [toolPermissionConfig, setToolPermissionConfig] = useState<ToolPermissionConfig>({
     rules: [],
     default_action: "deny",
@@ -251,6 +257,7 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
     setCategorySpecificThresholds({});
     setSelectedPatterns([]);
     setBlockedWords([]);
+    setSelectedContentCategories([]);
     setToolPermissionConfig({
       rules: [],
       default_action: "deny",
@@ -315,7 +322,7 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
         }
       }
 
-      // For Content Filter, add patterns and blocked words
+      // For Content Filter, add patterns, blocked words, and categories
       if (shouldRenderContentFilterConfigSettings(values.provider)) {
         if (selectedPatterns.length > 0) {
           guardrailData.litellm_params.patterns = selectedPatterns.map((p) => ({
@@ -331,6 +338,14 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
             keyword: w.keyword,
             action: w.action,
             description: w.description,
+          }));
+        }
+        if (selectedContentCategories.length > 0) {
+          guardrailData.litellm_params.categories = selectedContentCategories.map((c) => ({
+            category: c.category,
+            enabled: true,
+            action: c.action,
+            severity_threshold: c.severity_threshold || "medium",
           }));
         }
       }
@@ -441,7 +456,7 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
           label="Guardrail Name"
           rules={[{ required: true, message: "Please enter a guardrail name" }]}
         >
-          <TextInput placeholder="Enter a name for this guardrail" />
+          <Input placeholder="Enter a name for this guardrail" />
         </Form.Item>
 
         <Form.Item
@@ -531,41 +546,41 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
                 </div>
               </Option>
             )) || (
-              <>
-                <Option value="pre_call" label="pre_call">
-                  <div>
+                <>
+                  <Option value="pre_call" label="pre_call">
                     <div>
-                      <strong>pre_call</strong> <Tag color="green">Recommended</Tag>
+                      <div>
+                        <strong>pre_call</strong> <Tag color="green">Recommended</Tag>
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#888" }}>{modeDescriptions.pre_call}</div>
                     </div>
-                    <div style={{ fontSize: "12px", color: "#888" }}>{modeDescriptions.pre_call}</div>
-                  </div>
-                </Option>
-                <Option value="during_call" label="during_call">
-                  <div>
+                  </Option>
+                  <Option value="during_call" label="during_call">
                     <div>
-                      <strong>during_call</strong>
+                      <div>
+                        <strong>during_call</strong>
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#888" }}>{modeDescriptions.during_call}</div>
                     </div>
-                    <div style={{ fontSize: "12px", color: "#888" }}>{modeDescriptions.during_call}</div>
-                  </div>
-                </Option>
-                <Option value="post_call" label="post_call">
-                  <div>
+                  </Option>
+                  <Option value="post_call" label="post_call">
                     <div>
-                      <strong>post_call</strong>
+                      <div>
+                        <strong>post_call</strong>
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#888" }}>{modeDescriptions.post_call}</div>
                     </div>
-                    <div style={{ fontSize: "12px", color: "#888" }}>{modeDescriptions.post_call}</div>
-                  </div>
-                </Option>
-                <Option value="logging_only" label="logging_only">
-                  <div>
+                  </Option>
+                  <Option value="logging_only" label="logging_only">
                     <div>
-                      <strong>logging_only</strong>
+                      <div>
+                        <strong>logging_only</strong>
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#888" }}>{modeDescriptions.logging_only}</div>
                     </div>
-                    <div style={{ fontSize: "12px", color: "#888" }}>{modeDescriptions.logging_only}</div>
-                  </div>
-                </Option>
-              </>
-            )}
+                  </Option>
+                </>
+              )}
           </Select>
         </Form.Item>
 
@@ -581,7 +596,7 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
         </Form.Item>
 
         {/* Use the GuardrailProviderFields component to render provider-specific fields */}
-        {!isToolPermissionProvider && (
+        {!isToolPermissionProvider && !shouldRenderContentFilterConfigSettings(selectedProvider) && (
           <GuardrailProviderFields
             selectedProvider={selectedProvider}
             accessToken={accessToken}
@@ -608,7 +623,7 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
     );
   };
 
-  const renderContentFilterConfiguration = (step: "patterns" | "keywords") => {
+  const renderContentFilterConfiguration = (step: "patterns" | "keywords" | "categories") => {
     if (!guardrailSettings || !shouldRenderContentFilterConfigSettings(selectedProvider)) return null;
 
     const contentFilterSettings = guardrailSettings.content_filter_settings;
@@ -632,6 +647,15 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
         onBlockedWordUpdate={(id, field, value) => {
           setBlockedWords(
             blockedWords.map((w) => (w.id === id ? { ...w, [field]: value } : w))
+          );
+        }}
+        contentCategories={contentFilterSettings.content_categories || []}
+        selectedContentCategories={selectedContentCategories}
+        onContentCategoryAdd={(category) => setSelectedContentCategories([...selectedContentCategories, category])}
+        onContentCategoryRemove={(id) => setSelectedContentCategories(selectedContentCategories.filter((c) => c.id !== id))}
+        onContentCategoryUpdate={(id, field, value) => {
+          setSelectedContentCategories(
+            selectedContentCategories.map((c) => (c.id === id ? { ...c, [field]: value } : c))
           );
         }}
         accessToken={accessToken}
@@ -675,10 +699,15 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
           return renderPiiConfiguration();
         }
         if (shouldRenderContentFilterConfigSettings(selectedProvider)) {
-          return renderContentFilterConfiguration("patterns");
+          return renderContentFilterConfiguration("categories");
         }
         return renderOptionalParams();
       case 2:
+        if (shouldRenderContentFilterConfigSettings(selectedProvider)) {
+          return renderContentFilterConfiguration("patterns");
+        }
+        return null;
+      case 3:
         if (shouldRenderContentFilterConfigSettings(selectedProvider)) {
           return renderContentFilterConfiguration("keywords");
         }
@@ -689,23 +718,23 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
   };
 
   const renderStepButtons = () => {
-    const totalSteps = shouldRenderContentFilterConfigSettings(selectedProvider) ? 3 : 2;
+    const totalSteps = shouldRenderContentFilterConfigSettings(selectedProvider) ? 4 : 2;
     const isLastStep = currentStep === totalSteps - 1;
-    
+
     return (
       <div className="flex justify-end space-x-2 mt-4">
         {currentStep > 0 && (
-          <Button variant="secondary" onClick={prevStep}>
+          <Button onClick={prevStep}>
             Previous
           </Button>
         )}
-        {!isLastStep && <Button onClick={nextStep}>Next</Button>}
+        {!isLastStep && <Button type="primary" onClick={nextStep}>Next</Button>}
         {isLastStep && (
-          <Button onClick={handleSubmit} loading={loading}>
+          <Button type="primary" onClick={handleSubmit} loading={loading}>
             Create Guardrail
           </Button>
         )}
-        <Button variant="secondary" onClick={handleClose}>
+        <Button onClick={handleClose}>
           Cancel
         </Button>
       </div>
@@ -713,7 +742,7 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
   };
 
   return (
-    <Modal title="Add Guardrail" open={visible} onCancel={handleClose} footer={null} width={700}>
+    <Modal title="Add Guardrail" open={visible} onCancel={handleClose} footer={null} width={800}>
       <Form
         form={form}
         layout="vertical"
@@ -722,19 +751,22 @@ const AddGuardrailForm: React.FC<AddGuardrailFormProps> = ({ visible, onClose, a
           default_on: false,
         }}
       >
-        <Steps current={currentStep} className="mb-6">
+        <Steps current={currentStep} className="mb-6" style={{ overflow: "visible" }}>
           <Step title="Basic Info" />
           <Step
             title={
               shouldRenderPIIConfigSettings(selectedProvider)
                 ? "PII Configuration"
                 : shouldRenderContentFilterConfigSettings(selectedProvider)
-                  ? "Pattern Detection"
+                  ? "Default Categories"
                   : "Provider Configuration"
             }
           />
           {shouldRenderContentFilterConfigSettings(selectedProvider) && (
-            <Step title="Blocked Keywords" />
+            <>
+              <Step title="Patterns" />
+              <Step title="Keywords" />
+            </>
           )}
         </Steps>
 

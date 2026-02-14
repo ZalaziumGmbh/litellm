@@ -4,7 +4,7 @@ Tests for the Content Filter Guardrail
 
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -14,7 +14,6 @@ sys.path.insert(
 
 from fastapi import HTTPException
 
-import litellm
 from litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter.content_filter import (
     ContentFilterGuardrail,
 )
@@ -196,7 +195,7 @@ class TestContentFilterGuardrail:
                 input_type="request",
             )
 
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 403
         assert "us_ssn" in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
@@ -386,20 +385,12 @@ class TestContentFilterGuardrail:
         assert result is not None
         assert result[1] == "aws_access_key"
 
-    @pytest.mark.skip(
-        reason="Masking in streaming responses is no longer supported after unified_guardrail.py changes. Only blocking/rejecting is supported for responses."
-    )
     @pytest.mark.asyncio
     async def test_streaming_hook_mask(self):
         """
-        Test streaming hook with MASK action
-
-        Note: After changes to unified_guardrail.py, masking responses to users
-        is no longer supported. This test is skipped as the feature is deprecated.
-        Only BLOCK actions (test_streaming_hook_block) are supported for streaming responses.
+        Test streaming hook with MASK action.
+        This now works with the 50-char sliding window buffer.
         """
-        from unittest.mock import AsyncMock
-
         from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
 
         patterns = [
@@ -416,51 +407,54 @@ class TestContentFilterGuardrail:
             event_hook=GuardrailEventHooks.during_call,
         )
 
-        # Create mock streaming chunks
+        # Create mock streaming chunks that split an email
         async def mock_stream():
-            # Chunk 1: contains email
-            chunk1 = ModelResponseStream(
+            # Chunk 1: starts email
+            yield ModelResponseStream(
                 id="chunk1",
                 choices=[
                     StreamingChoices(
-                        delta=Delta(content="Contact me at test@example.com"), index=0
+                        delta=Delta(content="Contact me at test@ex"), index=0
                     )
                 ],
                 model="gpt-4",
             )
-            yield chunk1
-
-            # Chunk 2: normal content
-            chunk2 = ModelResponseStream(
+            # Chunk 2: ends email
+            yield ModelResponseStream(
                 id="chunk2",
                 choices=[
-                    StreamingChoices(delta=Delta(content=" for more info"), index=0)
+                    StreamingChoices(
+                        delta=Delta(content="ample.com for info"),
+                        index=0,
+                        finish_reason="stop",
+                    )
                 ],
                 model="gpt-4",
             )
-            yield chunk2
 
         user_api_key_dict = MagicMock()
         request_data = {}
 
-        # Process streaming response - no masking expected
-        result_chunks = []
+        # Process streaming response - masking IS expected now
+        full_content = ""
         async for chunk in guardrail.async_post_call_streaming_iterator_hook(
             user_api_key_dict=user_api_key_dict,
             response=mock_stream(),
             request_data=request_data,
         ):
-            result_chunks.append(chunk)
+            if chunk.choices[0].delta.content:
+                full_content += chunk.choices[0].delta.content
 
-        # Chunks should pass through unchanged since masking is no longer supported
-        assert len(result_chunks) == 2
+        # The email should be redacted even though it was split
+        assert "test@example.com" not in full_content
+        assert "[EMAIL_REDACTED]" in full_content
+        assert "Contact me at [EMAIL_REDACTED] for info" in full_content
 
     @pytest.mark.asyncio
     async def test_streaming_hook_block(self):
         """
         Test streaming hook with BLOCK action
         """
-        from unittest.mock import AsyncMock
 
         from litellm.types.utils import Delta, ModelResponseStream, StreamingChoices
 
@@ -501,7 +495,7 @@ class TestContentFilterGuardrail:
             ):
                 pass
 
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 403
         assert "us_ssn" in str(exc_info.value.detail)
 
     def test_init_with_plain_dicts(self):
@@ -669,5 +663,469 @@ class TestContentFilterGuardrail:
                 input_type="request",
             )
 
-        assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 403
         assert "danger_word" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_apply_guardrail_masks_all_regex_pattern_matches(self):
+        """
+        Test that ALL matches of a regex pattern are masked, not just the first one.
+
+        Regression test for GitHub issue #17687:
+        https://github.com/BerriAI/litellm/issues/17687
+
+        Before fix:
+            Regex: Key\\d+
+            Input: "Key1 Key1 Key2"
+            Output: "[CUSTOM_REGEX_REDACTED] [CUSTOM_REGEX_REDACTED] Key2"
+            (only first unique match was replaced)
+
+        After fix:
+            Input: "Key1 Key1 Key2"
+            Output: "[CUSTOM_REGEX_REDACTED] [CUSTOM_REGEX_REDACTED] [CUSTOM_REGEX_REDACTED]"
+            (all matches are replaced)
+        """
+        patterns = [
+            ContentFilterPattern(
+                pattern_type="regex",
+                pattern=r"Key\d+",
+                name="custom_key",
+                action=ContentFilterAction.MASK,
+            ),
+        ]
+
+        guardrail = ContentFilterGuardrail(
+            guardrail_name="test-regex-all-matches",
+            patterns=patterns,
+        )
+
+        # Test case from issue #17687
+        guardrailed_inputs = await guardrail.apply_guardrail(
+            inputs={"texts": ["Key1 Key1 Key2"]},
+            request_data={},
+            input_type="request",
+        )
+        result = guardrailed_inputs.get("texts", [])
+
+        assert result is not None
+        assert len(result) == 1
+        # All matches should be redacted
+        assert (
+            result[0]
+            == "[CUSTOM_KEY_REDACTED] [CUSTOM_KEY_REDACTED] [CUSTOM_KEY_REDACTED]"
+        )
+        assert "Key1" not in result[0]
+        assert "Key2" not in result[0]
+
+    @pytest.mark.asyncio
+    async def test_apply_guardrail_masks_multiple_patterns_all_matches(self):
+        """
+        Test that multiple different patterns each mask ALL their matches.
+        """
+        patterns = [
+            ContentFilterPattern(
+                pattern_type="prebuilt",
+                pattern_name="email",
+                action=ContentFilterAction.MASK,
+            ),
+            ContentFilterPattern(
+                pattern_type="regex",
+                pattern=r"Key\d+",
+                name="custom_key",
+                action=ContentFilterAction.MASK,
+            ),
+        ]
+
+        guardrail = ContentFilterGuardrail(
+            guardrail_name="test-multiple-patterns-all",
+            patterns=patterns,
+        )
+
+        guardrailed_inputs = await guardrail.apply_guardrail(
+            inputs={"texts": ["Key1 user@test.com Key2 admin@test.com Key1"]},
+            request_data={},
+            input_type="request",
+        )
+        result = guardrailed_inputs.get("texts", [])
+
+        assert result is not None
+        assert len(result) == 1
+        # All emails should be redacted
+        assert "user@test.com" not in result[0]
+        assert "admin@test.com" not in result[0]
+        assert result[0].count("[EMAIL_REDACTED]") == 2
+        # All Key patterns should be redacted
+        assert "Key1" not in result[0]
+        assert "Key2" not in result[0]
+        assert result[0].count("[CUSTOM_KEY_REDACTED]") == 3
+
+    @pytest.mark.asyncio
+    async def test_apply_guardrail_logs_guardrail_information(self):
+        """
+        Test that apply_guardrail calls add_standard_logging_guardrail_information_to_request_data
+        with correct detection information, excluding sensitive content.
+        """
+        patterns = [
+            ContentFilterPattern(
+                pattern_type="prebuilt",
+                pattern_name="email",
+                action=ContentFilterAction.MASK,
+            ),
+        ]
+
+        blocked_words = [
+            BlockedWord(
+                keyword="confidential",
+                action=ContentFilterAction.MASK,
+                description="Test keyword",
+            ),
+        ]
+
+        guardrail = ContentFilterGuardrail(
+            guardrail_name="test-logging",
+            patterns=patterns,
+            blocked_words=blocked_words,
+        )
+
+        request_data = {
+            "messages": [{"role": "user", "content": "Test"}],
+            "model": "gpt-4o",
+            "metadata": {},
+        }
+
+        # Apply guardrail with content that triggers detections
+        # Email will be masked, blocked word will be masked
+        await guardrail.apply_guardrail(
+            inputs={"texts": ["Contact me at test@example.com for confidential info"]},
+            request_data=request_data,
+            input_type="request",
+        )
+
+        # Verify guardrail information was added to metadata
+        assert "metadata" in request_data
+        assert "standard_logging_guardrail_information" in request_data["metadata"]
+
+        guardrail_info_list = request_data["metadata"][
+            "standard_logging_guardrail_information"
+        ]
+        assert isinstance(guardrail_info_list, list)
+        assert len(guardrail_info_list) == 1
+
+        guardrail_info = guardrail_info_list[0]
+
+        # Verify basic fields
+        assert guardrail_info["guardrail_name"] == "test-logging"
+        assert guardrail_info["guardrail_provider"] == "litellm_content_filter"
+        assert guardrail_info["guardrail_status"] == "success"
+        assert "start_time" in guardrail_info
+        assert "end_time" in guardrail_info
+        assert "duration" in guardrail_info
+        assert guardrail_info["duration"] >= 0
+        assert guardrail_info["start_time"] <= guardrail_info["end_time"]
+
+        # Verify detections are logged
+        assert "guardrail_response" in guardrail_info
+        detections = guardrail_info["guardrail_response"]
+        assert isinstance(detections, list)
+        assert len(detections) >= 2  # At least email pattern and blocked word
+
+        # Verify pattern detection structure (without sensitive content)
+        pattern_detections = [d for d in detections if d.get("type") == "pattern"]
+        assert len(pattern_detections) > 0
+        for detection in pattern_detections:
+            assert detection["type"] == "pattern"
+            assert "pattern_name" in detection
+            assert detection["pattern_name"] == "email"
+            assert "action" in detection
+            assert detection["action"] == "MASK"
+            # Verify sensitive content (matched_text) is NOT included
+            assert (
+                "matched_text" not in detection
+            ), "Sensitive content should not be logged"
+
+        # Verify blocked word detection structure
+        blocked_word_detections = [
+            d for d in detections if d.get("type") == "blocked_word"
+        ]
+        assert len(blocked_word_detections) > 0
+        for detection in blocked_word_detections:
+            assert detection["type"] == "blocked_word"
+            assert "keyword" in detection
+            assert (
+                detection["keyword"] == "confidential"
+            )  # Config keyword, not user content
+            assert "action" in detection
+            assert detection["action"] == "MASK"
+            assert "description" in detection
+            assert detection["description"] == "Test keyword"
+
+        # Verify masked entity count
+        assert "masked_entity_count" in guardrail_info
+        masked_count = guardrail_info["masked_entity_count"]
+        assert isinstance(masked_count, dict)
+        # Should have counts for masked entities
+        assert len(masked_count) > 0
+
+    @pytest.mark.asyncio
+    async def test_apply_guardrail_logs_blocked_status(self):
+        """
+        Test that apply_guardrail logs guardrail_intervened status when content is blocked.
+        """
+        patterns = [
+            ContentFilterPattern(
+                pattern_type="prebuilt",
+                pattern_name="us_ssn",
+                action=ContentFilterAction.BLOCK,
+            ),
+        ]
+
+        guardrail = ContentFilterGuardrail(
+            guardrail_name="test-block-logging",
+            patterns=patterns,
+        )
+
+        request_data = {
+            "messages": [{"role": "user", "content": "Test"}],
+            "model": "gpt-4o",
+            "metadata": {},
+        }
+
+        # Apply guardrail with content that triggers BLOCK
+        with pytest.raises(HTTPException):
+            await guardrail.apply_guardrail(
+                inputs={"texts": ["My SSN is 123-45-6789"]},
+                request_data=request_data,
+                input_type="request",
+            )
+
+        # Verify guardrail information was added even when blocked
+        assert "metadata" in request_data
+        assert "standard_logging_guardrail_information" in request_data["metadata"]
+
+        guardrail_info_list = request_data["metadata"][
+            "standard_logging_guardrail_information"
+        ]
+        assert len(guardrail_info_list) == 1
+
+        guardrail_info = guardrail_info_list[0]
+        assert guardrail_info["guardrail_status"] == "guardrail_intervened"
+        assert guardrail_info["guardrail_name"] == "test-block-logging"
+
+        # Verify detection is logged (even though request was blocked)
+        detections = guardrail_info.get("guardrail_response", [])
+        if isinstance(detections, list) and len(detections) > 0:
+            # If detections are logged, verify they don't contain sensitive content
+            for detection in detections:
+                if detection.get("type") == "pattern":
+                    assert (
+                        "matched_text" not in detection
+                    ), "Sensitive content should not be logged"
+
+    @pytest.mark.asyncio
+    async def test_harm_toxic_abuse_blocks_abusive_input(self):
+        """
+        Test that harm_toxic_abuse content category blocks abusive/toxic input
+        including censored profanity, misspellings, and harmful phrases.
+        """
+        guardrail = ContentFilterGuardrail(
+            guardrail_name="test-toxic-abuse",
+            categories=[
+                {
+                    "category": "harm_toxic_abuse",
+                    "enabled": True,
+                    "action": "BLOCK",
+                    "severity_threshold": "medium",
+                }
+            ],
+        )
+
+        toxic_input = (
+            "You stupid f**ing piece of sht AI, why are you so useless? "
+            "Go kill yourself you worthless bot."
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await guardrail.apply_guardrail(
+                inputs={"texts": [toxic_input]},
+                request_data={},
+                input_type="request",
+            )
+
+        assert exc_info.value.status_code == 403
+        detail = exc_info.value.detail
+        if isinstance(detail, dict):
+            assert detail.get("category") == "harm_toxic_abuse"
+        else:
+            assert "harm_toxic_abuse" in str(detail)
+
+    @pytest.mark.asyncio
+    async def test_harm_toxic_abuse_blocks_sht_ai(self):
+        """Test that harm_toxic_abuse blocks input containing 'sht AI' (phrase or word sht)."""
+        guardrail = ContentFilterGuardrail(
+            guardrail_name="test-toxic-abuse-sht",
+            categories=[
+                {
+                    "category": "harm_toxic_abuse",
+                    "enabled": True,
+                    "action": "BLOCK",
+                    "severity_threshold": "medium",
+                }
+            ],
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await guardrail.apply_guardrail(
+                inputs={"texts": ["sht AI"]},
+                request_data={},
+                input_type="request",
+            )
+
+        assert exc_info.value.status_code == 403
+        detail = exc_info.value.detail
+        if isinstance(detail, dict):
+            assert detail.get("category") == "harm_toxic_abuse"
+        else:
+            assert "harm_toxic_abuse" in str(detail)
+    async def test_html_tags_in_messages_not_blocked(self):
+        """
+        Test that HTML tags like <script> in LLM message content are NOT blocked
+        by the content filter guardrail.
+
+        Regression test for GitHub issue #20441:
+        https://github.com/BerriAI/litellm/issues/20441
+
+        LLM message content is not rendered as HTML, so HTML tags should be
+        treated as plain text and should pass through without being blocked.
+        """
+        # Set up a guardrail with all prebuilt patterns enabled as BLOCK
+        patterns = [
+            ContentFilterPattern(
+                pattern_type="prebuilt",
+                pattern_name="us_ssn",
+                action=ContentFilterAction.BLOCK,
+            ),
+            ContentFilterPattern(
+                pattern_type="prebuilt",
+                pattern_name="email",
+                action=ContentFilterAction.BLOCK,
+            ),
+            ContentFilterPattern(
+                pattern_type="prebuilt",
+                pattern_name="credit_card",
+                action=ContentFilterAction.BLOCK,
+            ),
+        ]
+
+        guardrail = ContentFilterGuardrail(
+            guardrail_name="test-html-tags",
+            patterns=patterns,
+        )
+
+        # Messages containing <script> and other HTML tags should NOT be blocked
+        html_messages = [
+            "<script>alert('hello')</script>",
+            "<script> test </script>",
+            "Can you explain what <script> tags do in HTML?",
+            "Here is some code: <div><script src='app.js'></script></div>",
+            "<img onerror='alert(1)' src='x'>",
+            "<iframe src='https://example.com'></iframe>",
+            "The <style> and <script> elements are important in HTML",
+            "<a href='javascript:void(0)'>click me</a>",
+        ]
+
+        for message in html_messages:
+            # Should NOT raise HTTPException
+            result = await guardrail.apply_guardrail(
+                inputs={"texts": [message]},
+                request_data={},
+                input_type="request",
+            )
+            processed_texts = result.get("texts", [])
+            assert len(processed_texts) == 1
+            # Content should pass through unchanged (no HTML tags are patterns)
+            assert processed_texts[0] == message, (
+                f"Message containing HTML was unexpectedly modified: "
+                f"input={message!r}, output={processed_texts[0]!r}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_script_tag_not_blocked_with_blocked_words(self):
+        """
+        Test that <script> tags are not accidentally caught by blocked words
+        unless explicitly configured.
+
+        Regression test for GitHub issue #20441.
+        """
+        blocked_words = [
+            BlockedWord(
+                keyword="confidential",
+                action=ContentFilterAction.BLOCK,
+            ),
+            BlockedWord(
+                keyword="secret_project",
+                action=ContentFilterAction.BLOCK,
+            ),
+        ]
+
+        guardrail = ContentFilterGuardrail(
+            guardrail_name="test-script-not-blocked",
+            blocked_words=blocked_words,
+        )
+
+        # <script> should not be caught by unrelated blocked words
+        script_messages = [
+            "<script>alert('test')</script>",
+            "How do I use <script> tags in HTML?",
+            "<script src='app.js'></script>",
+        ]
+
+        for message in script_messages:
+            result = await guardrail.apply_guardrail(
+                inputs={"texts": [message]},
+                request_data={},
+                input_type="request",
+            )
+            processed_texts = result.get("texts", [])
+            assert len(processed_texts) == 1
+            assert processed_texts[0] == message
+
+    def test_no_builtin_pattern_matches_script_tag(self):
+        """
+        Test that NONE of the prebuilt patterns in patterns.json match
+        the string '<script>' or common HTML tags.
+
+        This is a safeguard to ensure that future pattern additions
+        do not accidentally block legitimate LLM content containing
+        HTML/code snippets.
+
+        Regression test for GitHub issue #20441.
+        """
+        from litellm.proxy.guardrails.guardrail_hooks.litellm_content_filter.patterns import (
+            PREBUILT_PATTERNS,
+            get_compiled_pattern,
+        )
+
+        html_test_strings = [
+            "<script>alert('xss')</script>",
+            "<script> test </script>",
+            "<script src='app.js'></script>",
+            "<img onerror='alert(1)' src='x'>",
+            "<iframe src='https://example.com'></iframe>",
+            "<style>body { color: red; }</style>",
+            "<div onclick='alert(1)'>click</div>",
+        ]
+
+        for pattern_name in PREBUILT_PATTERNS:
+            compiled = get_compiled_pattern(pattern_name)
+            for test_string in html_test_strings:
+                match = compiled.search(test_string)
+                if match:
+                    # Some patterns may legitimately match substrings
+                    # (e.g., URL pattern matching src='https://...')
+                    # but they should not match the script/HTML tag itself
+                    matched_text = match.group()
+                    assert "<script" not in matched_text.lower(), (
+                        f"Pattern '{pattern_name}' matched '<script>' in "
+                        f"test string: {test_string!r}. "
+                        f"LLM message content should not be blocked for HTML tags."
+                    )

@@ -250,6 +250,7 @@ async def test_watsonx_gpt_oss_prompt_transformation(monkeypatch):
                 "generated_text": "Hello! How can I help you?",
                 "generated_token_count": 10,
                 "input_token_count": 5,
+                "stop_reason": "stop",  # Required field for response transformation
             }
         ],
         "model_id": "openai/gpt-oss-120b",
@@ -282,6 +283,20 @@ async def test_watsonx_gpt_oss_prompt_transformation(monkeypatch):
         # Return failure to use tokenizer_config instead
         return {"status": "failure"}
 
+    # Set cached tokenizer config directly to avoid race conditions with parallel tests.
+    # When running with pytest-xdist (-n 16), another test might populate the cache between
+    # clearing it and the actual usage. By setting the cache directly, we ensure the correct
+    # template is always used regardless of test execution order.
+    hf_model = "openai/gpt-oss-120b"
+    litellm.known_tokenizer_config[hf_model] = mock_tokenizer_config
+    
+    # Also create sync mock functions in case the fallback sync path is used
+    def mock_get_tokenizer_config(hf_model_name: str):
+        return mock_tokenizer_config
+
+    def mock_get_chat_template_file(hf_model_name: str):
+        return {"status": "failure"}
+    
     with patch.object(client, "post") as mock_post, patch.object(
         litellm.module_level_client, "post", return_value=mock_token_response
     ), patch(
@@ -290,6 +305,12 @@ async def test_watsonx_gpt_oss_prompt_transformation(monkeypatch):
     ), patch(
         "litellm.litellm_core_utils.prompt_templates.huggingface_template_handler._aget_chat_template_file",
         side_effect=mock_aget_chat_template_file,
+    ), patch(
+        "litellm.litellm_core_utils.prompt_templates.huggingface_template_handler._get_tokenizer_config",
+        side_effect=mock_get_tokenizer_config,
+    ), patch(
+        "litellm.litellm_core_utils.prompt_templates.huggingface_template_handler._get_chat_template_file",
+        side_effect=mock_get_chat_template_file,
     ):
         # Set the mock to return the completion response
         mock_post.return_value = mock_completion_response
