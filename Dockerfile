@@ -47,8 +47,10 @@ FROM $LITELLM_RUNTIME_IMAGE AS runtime
 # Ensure runtime stage runs as root
 USER root
 
-# Install runtime dependencies (libsndfile needed for audio processing on ARM64)
-RUN apk add --no-cache bash openssl tzdata nodejs npm python3 py3-pip libsndfile && \
+# Install runtime dependencies
+RUN apk add --no-cache bash openssl tzdata nodejs npm python3 py3-pip && \
+    # libsndfile is optional (needed for audio processing on ARM64); install if available
+    (apk add --no-cache libsndfile || true) && \
     npm install -g npm@latest tar@7.5.7 glob@11.1.0 @isaacs/brace-expansion@5.0.1 && \
     # SECURITY FIX: npm bundles tar, glob, and brace-expansion at multiple nested
     # levels inside its dependency tree. `npm install -g <pkg>` only creates a
