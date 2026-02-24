@@ -123,6 +123,9 @@ guardrails:
     litellm_params:
       guardrail: presidio
       mode: "pre_call"  # Run before LLM call
+      presidio_score_thresholds:  # optional confidence score thresholds for detections
+        CREDIT_CARD: 0.8
+        EMAIL_ADDRESS: 0.6
       pii_entities_config:
         CREDIT_CARD: "MASK"
         EMAIL_ADDRESS: "MASK"
@@ -682,3 +685,28 @@ Congratulations! 🎉 You've successfully set up PII masking with Presidio and L
 ---
 
 **Need help?** Join our [Discord community](https://discord.com/invite/wuPM9dRgDw) or open an issue on GitHub!
+
+### Suppressing False Positives
+
+Presidio can sometimes trigger false positive detections. For example, short alphanumeric strings might be incorrectly flagged as `US_DRIVER_LICENSE`.
+
+You can suppress these false positives using `presidio_score_thresholds` or `presidio_entities_deny_list`.
+
+```yaml
+guardrails:
+  - guardrail_name: presidio-pii
+    litellm_params:
+      guardrail: presidio
+      mode: "pre_call"
+      presidio_analyzer_api_base: "http://localhost:5002/"
+      presidio_anonymizer_api_base: "http://localhost:5001/"
+      
+      # Use high score thresholds to reduce false positives
+      presidio_score_thresholds:
+        US_DRIVER_LICENSE: 0.85
+        ALL: 0.5
+      
+      # Or exclude certain entity types entirely from detection
+      presidio_entities_deny_list:
+        - US_DRIVER_LICENSE
+```

@@ -2,26 +2,23 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing_extensions import Required, TypedDict
 
-from litellm.types.llms.openai import AllMessageValues, ChatCompletionToolParam
-from litellm.types.llms.openai import (
-    AllMessageValues,
-    ChatCompletionToolCallChunk,
-    ChatCompletionToolParam,
-)
 from litellm.types.proxy.guardrails.guardrail_hooks.enkryptai import (
     EnkryptAIGuardrailConfigs,
-)
-from litellm.types.proxy.guardrails.guardrail_hooks.generic_guardrail_api import (
-    GenericGuardrailAPIOptionalParams,
 )
 from litellm.types.proxy.guardrails.guardrail_hooks.grayswan import (
     GraySwanGuardrailConfigModel,
 )
 from litellm.types.proxy.guardrails.guardrail_hooks.ibm import (
     IBMGuardrailsBaseConfigModel,
+)
+from litellm.types.proxy.guardrails.guardrail_hooks.litellm_content_filter import (
+    ContentFilterCategoryConfig,
+)
+from litellm.types.proxy.guardrails.guardrail_hooks.qualifire import (
+    QualifireGuardrailConfigModel,
 )
 from litellm.types.proxy.guardrails.guardrail_hooks.tool_permission import (
     ToolPermissionGuardrailConfigModel,
@@ -49,6 +46,7 @@ class SupportedGuardrailIntegrations(Enum):
     LAKERA_V2 = "lakera_v2"
     PRESIDIO = "presidio"
     HIDE_SECRETS = "hide-secrets"
+    HIDDENLAYER = "hiddenlayer"
     AIM = "aim"
     PANGEA = "pangea"
     LASSO = "lasso"
@@ -60,15 +58,21 @@ class SupportedGuardrailIntegrations(Enum):
     MODEL_ARMOR = "model_armor"
     OPENAI_MODERATION = "openai_moderation"
     NOMA = "noma"
+    NOMA_V2 = "noma_v2"
     TOOL_PERMISSION = "tool_permission"
     ZSCALER_AI_GUARD = "zscaler_ai_guard"
     JAVELIN = "javelin"
     ENKRYPTAI = "enkryptai"
     IBM_GUARDRAILS = "ibm_guardrails"
     LITELLM_CONTENT_FILTER = "litellm_content_filter"
+    MCP_SECURITY = "mcp_security"
     ONYX = "onyx"
     PROMPT_SECURITY = "prompt_security"
     GENERIC_GUARDRAIL_API = "generic_guardrail_api"
+    QUALIFIRE = "qualifire"
+    CUSTOM_CODE = "custom_code"
+    SEMANTIC_GUARD = "semantic_guard"
+    MCP_END_USER_PERMISSION = "mcp_end_user_permission"
 
 
 class Role(Enum):
@@ -268,6 +272,13 @@ class PresidioPresidioConfigModelUserInterface(BaseModel):
         default=None,
         description="Base URL for the Presidio anonymizer API",
     )
+    presidio_filter_scope: Optional[Literal["input", "output", "both"]] = Field(
+        default=None,
+        description=(
+            "Where to apply Presidio checks: 'input' (user -> model), "
+            "'output' (model -> user), or 'both' (default)."
+        ),
+    )
     output_parse_pii: Optional[bool] = Field(
         default=None,
         description="When True, LiteLLM will replace the masked text with the original text in the response",
@@ -278,6 +289,10 @@ class PresidioPresidioConfigModelUserInterface(BaseModel):
         default="en",
         description="Language code for Presidio PII analysis (e.g., 'en', 'de', 'es', 'fr')",
     )
+    presidio_run_on: Optional[Literal["input", "output", "both"]] = Field(
+        default=None,
+        description="Where to apply Presidio checks: input, output, or both (default).",
+    )
 
 
 class PresidioConfigModel(PresidioPresidioConfigModelUserInterface):
@@ -285,6 +300,22 @@ class PresidioConfigModel(PresidioPresidioConfigModelUserInterface):
 
     pii_entities_config: Optional[Dict[Union[PiiEntityType, str], PiiAction]] = Field(
         default=None, description="Configuration for PII entity types and actions"
+    )
+
+    presidio_score_thresholds: Optional[Dict[Union[PiiEntityType, str], float]] = Field(
+        default=None,
+        description=(
+            "Optional per-entity minimum confidence scores for Presidio detections. "
+            "Entities below the threshold are ignored."
+        ),
+    )
+    presidio_entities_deny_list: Optional[List[Union[PiiEntityType, str]]] = Field(
+        default=None,
+        description=(
+            "List of entity types to exclude from Presidio detection results. "
+            "Detections of these types will be silently dropped. "
+            "Useful for suppressing false positives (e.g., US_DRIVER_LICENSE on coding routes)."
+        ),
     )
     presidio_ad_hoc_recognizers: Optional[str] = Field(
         default=None,
@@ -366,6 +397,10 @@ class LakeraV2GuardrailConfigModel(BaseModel):
         default=True,
         description="Whether to include developer information in the response",
     )
+    on_flagged: Optional[Literal["block", "monitor"]] = Field(
+        default="block",
+        description="Action to take when content is flagged: 'block' (raise exception) or 'monitor' (log only)",
+    )
 
 
 class LassoGuardrailConfigModel(BaseModel):
@@ -410,6 +445,10 @@ class PillarGuardrailConfigModel(BaseModel):
 class NomaGuardrailConfigModel(BaseModel):
     """Configuration parameters for the Noma Security guardrail"""
 
+    use_v2: Optional[bool] = Field(
+        default=False,
+        description="If True and guardrail='noma', route to the new Noma v2 implementation instead of the legacy implementation.",
+    )
     application_id: Optional[str] = Field(
         default=None,
         description="Application ID for Noma Security. Defaults to 'litellm' if not provided",
@@ -522,9 +561,27 @@ class ContentFilterConfigModel(BaseModel):
     blocked_words_file: Optional[str] = Field(
         default=None, description="Path to YAML file containing blocked_words list"
     )
+    categories: Optional[List[ContentFilterCategoryConfig]] = Field(
+        default=None,
+        description="List of prebuilt categories to enable (harmful_*, bias_*)",
+    )
+    severity_threshold: Optional[str] = Field(
+        default=None,
+        description="Minimum severity to block (high, medium, low)",
+    )
+    pattern_redaction_format: Optional[str] = Field(
+        default=None,
+        description="Format string for pattern redaction (use {pattern_name} placeholder)",
+    )
+    keyword_redaction_tag: Optional[str] = Field(
+        default=None,
+        description="Tag to use for keyword redaction",
+    )
 
 
-class BaseLitellmParams(BaseModel):  # works for new and patch update guardrails
+class BaseLitellmParams(
+    ContentFilterConfigModel
+):  # works for new and patch update guardrails
     api_key: Optional[str] = Field(
         default=None, description="API key for the guardrail service"
     )
@@ -605,10 +662,24 @@ class BaseLitellmParams(BaseModel):  # works for new and patch update guardrails
         description="Whether to fail the request if Model Armor encounters an error",
     )
 
-    # Generic Guardrail API params
     additional_provider_specific_params: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Additional provider-specific parameters for generic guardrail APIs",
+    )
+
+    unreachable_fallback: Literal["fail_closed", "fail_open"] = Field(
+        default="fail_closed",
+        description=(
+            "Behavior when a guardrail endpoint is unreachable due to network errors. "
+            "NOTE: This is currently only implemented by guardrail='generic_guardrail_api'. "
+            "'fail_closed' raises an error (default). 'fail_open' logs a critical error and allows the request to proceed."
+        ),
+    )
+
+    # Custom code guardrail params
+    custom_code: Optional[str] = Field(
+        default=None,
+        description="Python-like code containing the apply_guardrail function for custom guardrail logic",
     )
 
     model_config = ConfigDict(extra="allow", protected_namespaces=())
@@ -632,15 +703,32 @@ class LitellmParams(
     ToolPermissionGuardrailConfigModel,
     ZscalerAIGuardConfigModel,
     JavelinGuardrailConfigModel,
-    ContentFilterConfigModel,
     BaseLitellmParams,
     EnkryptAIGuardrailConfigs,
     IBMGuardrailsBaseConfigModel,
+    QualifireGuardrailConfigModel,
 ):
     guardrail: str = Field(description="The type of guardrail integration to use")
     mode: Union[str, List[str], Mode] = Field(
         description="When to apply the guardrail (pre_call, post_call, during_call, logging_only)"
     )
+
+    @field_validator(
+        "mode",
+        "default_action",
+        "on_disallowed_action",
+        "unreachable_fallback",
+        mode="before",
+        check_fields=False,
+    )
+    @classmethod
+    def normalize_lowercase(cls, v):
+        """Normalize string and list fields to lowercase for ALL guardrail types."""
+        if isinstance(v, str):
+            return v.lower()
+        if isinstance(v, list):
+            return [x.lower() if isinstance(x, str) else x for x in v]
+        return v
 
     def __init__(self, **kwargs):
         default_on = kwargs.pop("default_on", None)
@@ -648,6 +736,7 @@ class LitellmParams(
             kwargs["default_on"] = default_on
         else:
             kwargs["default_on"] = False
+
         super().__init__(**kwargs)
 
     def __contains__(self, key):
@@ -668,6 +757,7 @@ class Guardrail(TypedDict, total=False):
     guardrail_name: Required[str]
     litellm_params: Required[LitellmParams]
     guardrail_info: Optional[Dict]
+    policy_template: Optional[str]
     created_at: Optional[datetime]
     updated_at: Optional[datetime]
 
@@ -683,6 +773,7 @@ class GuardrailEventHooks(str, Enum):
     logging_only = "logging_only"
     pre_mcp_call = "pre_mcp_call"
     during_mcp_call = "during_mcp_call"
+    realtime_input_transcription = "realtime_input_transcription"
 
 
 class DynamicGuardrailParams(TypedDict):
@@ -745,13 +836,3 @@ class PatchGuardrailRequest(BaseModel):
     guardrail_name: Optional[str] = None
     litellm_params: Optional[BaseLitellmParams] = None
     guardrail_info: Optional[Dict[str, Any]] = None
-
-
-class GenericGuardrailAPIInputs(TypedDict, total=False):
-    texts: List[str]  # extracted text from the LLM response - for basic text guardrails
-    images: List[str]  # extracted images from the LLM response - for image guardrails
-    tools: List[ChatCompletionToolParam]  # tools sent to the LLM
-    tool_calls: List[ChatCompletionToolCallChunk]  # tool calls sent from the LLM
-    structured_messages: List[
-        AllMessageValues
-    ]  # structured messages sent to the LLM - indicates if text is from system or user
