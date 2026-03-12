@@ -5705,7 +5705,7 @@
     },
     "azure_ai/mistral-document-ai-2505": {
         "litellm_provider": "azure_ai",
-        "ocr_cost_per_page": 0.021,
+        "ocr_cost_per_page": 0.003,
         "mode": "ocr",
         "supported_endpoints": [
             "/v1/ocr"
