@@ -1,0 +1,252 @@
+# ============================================================================
+#  LiteLLM Proxy Configuration
+#  Benötigt LiteLLM >= 1.83.13 (REP-Endpoint-Support, PR #26281 vom 23.04.2026)
+# ============================================================================
+router_settings:
+  routing_strategy: simple-shuffle
+  allowed_fails: 3
+  cooldown_time: 10
+  num_retries: 3
+  enable_pre_call_checks: true
+  fallbacks:
+    - gemini-2.5-pro:   ["azure-gpt-5.4"]
+    - gemini-2.5-flash: ["azure-gpt-5.4"]
+    - gemini-3.5-flash: ["gemini-2.5-flash", "azure-gpt-5.4"]   # stays EU-residiert
+    - claude-opus-4.6:  ["azure-gpt-5.4"]
+    - azure-gpt-5.6-luna: ["azure-gpt-5.4"]
+
+# ============================================================================
+#  Reusable anchors
+# ============================================================================
+_anchors:
+
+  # ── Gemini 2.5 Pro (Vertex AI) ────────────────────────────────────────────
+  gemini_pro_base: &gemini_pro_base
+    model: vertex_ai/gemini-2.5-pro
+    vertex_project: zalazium-gmbh
+    vertex_credentials: /app/google.json
+  gemini_pro_cost: &gemini_pro_cost
+    input_cost_per_token: 0.0000614035
+    output_cost_per_token: 0.0000921053
+
+  # ── Gemini 2.5 Flash (Vertex AI) ──────────────────────────────────────────
+  gemini_flash_base: &gemini_flash_base
+    model: vertex_ai/gemini-2.5-flash
+    vertex_project: zalazium-gmbh
+    vertex_credentials: /app/google.json
+  gemini_flash_cost: &gemini_flash_cost
+    input_cost_per_token: 0.0000018421
+    output_cost_per_token: 0.0000153509
+
+  # ── Gemini 3.5 Flash (Vertex AI, EU-REP-Multi-Region) ─────────────────────
+  # Liste EU-REP (non-global, seit 01.07.2026 +10% vs global): $1.65 in / $9.90 out per 1M
+  # Quelle: cloud.google.com/vertex-ai/generative-ai/pricing (verifiziert 17.07.2026)
+  # Resell: Liste × 7 ÷ 1.14 (gleiches Muster wie gemini_flash_cost)
+  #   Input:  1.65 × 7 ÷ 1.14 = 10.1316 €/M    Output: 9.90 × 7 ÷ 1.14 = 60.7895 €/M
+  # Cached Input Liste: $0.165/M; Context-Cache-Storage $1.00/h separat
+  gemini_35_flash_base: &gemini_35_flash_base
+    model: vertex_ai/gemini-3.5-flash
+    vertex_project: zalazium-gmbh
+    vertex_credentials: /app/google.json
+  gemini_35_flash_cost: &gemini_35_flash_cost
+    input_cost_per_token: 0.0000101316
+    output_cost_per_token: 0.0000607895
+
+  # ── Qwen3.6-27B vLLM (shared across all 3 zalazium-* variants) ────────────
+  # Sampler-Defaults per Qwen3.6 Model-Card: huggingface.co/Qwen/Qwen3.6-27B
+  qwen_endpoint: &qwen_endpoint
+    model: openai/Qwen3.6-27B
+    api_base: http://172.17.0.1:20000/v1
+    api_key: "not-needed"
+    drop_params: false
+  qwen_info: &qwen_info
+    supports_vision: true
+    supports_function_calling: true
+  # Thinking-Mode-Preset: erweitert den Endpoint um HF's Reasoning-Sampler.
+  # ultra-think (T=1.0) und coder (T=0.6) erben alles bis auf Temperature
+  # und max_tokens daraus.
+  qwen_thinking_base: &qwen_thinking_base
+    <<: *qwen_endpoint
+    top_p: 0.95
+    extra_body:
+      top_k: 20
+      min_p: 0.0
+      repetition_penalty: 1.0
+      presence_penalty: 0.0
+    chat_template_kwargs:
+      enable_thinking: true
+
+# ============================================================================
+#  Model list
+# ============================================================================
+model_list:
+
+  # ── Gemini 3.5 Flash – GDPR-compliant EU multi-region (REP endpoint) ──────
+  # vertex_location "eu" -> https://aiplatform.eu.rep.googleapis.com (empirisch verifiziert 17.07.2026)
+  # NICHT "global" eintragen — global = weltweites Routing, KEINE EU-Datenresidenz.
+  # Single-EU-Regionen (europe-west1 etc.) haben 3.5-flash noch nicht (empirisch 404, 17.07.2026).
+  - { model_name: gemini-3.5-flash, litellm_params: { <<: *gemini_35_flash_base, vertex_location: eu }, model_info: *gemini_35_flash_cost }
+
+  # ── Gemini 2.5 Pro – GDPR-compliant EU multi-region ───────────────────────
+  - { model_name: gemini-2.5-pro, litellm_params: { <<: *gemini_pro_base, vertex_location: europe-west1      }, model_info: *gemini_pro_cost }  # Belgium (primary)
+  - { model_name: gemini-2.5-pro, litellm_params: { <<: *gemini_pro_base, vertex_location: europe-west4      }, model_info: *gemini_pro_cost }  # Netherlands
+  - { model_name: gemini-2.5-pro, litellm_params: { <<: *gemini_pro_base, vertex_location: europe-west8      }, model_info: *gemini_pro_cost }  # Milan
+  - { model_name: gemini-2.5-pro, litellm_params: { <<: *gemini_pro_base, vertex_location: europe-west9      }, model_info: *gemini_pro_cost }  # Paris
+  - { model_name: gemini-2.5-pro, litellm_params: { <<: *gemini_pro_base, vertex_location: europe-north1     }, model_info: *gemini_pro_cost }  # Finland
+  - { model_name: gemini-2.5-pro, litellm_params: { <<: *gemini_pro_base, vertex_location: europe-central2   }, model_info: *gemini_pro_cost }  # Warsaw
+  - { model_name: gemini-2.5-pro, litellm_params: { <<: *gemini_pro_base, vertex_location: europe-southwest1 }, model_info: *gemini_pro_cost }  # Madrid
+
+  # ── Gemini 2.5 Flash – GDPR-compliant EU multi-region ─────────────────────
+  # (2.5er laufen NICHT auf dem eu-REP-Endpoint — empirisch 404 — daher Single-Regionen behalten)
+  - { model_name: gemini-2.5-flash, litellm_params: { <<: *gemini_flash_base, vertex_location: europe-west1      }, model_info: *gemini_flash_cost }  # Belgium (primary)
+  - { model_name: gemini-2.5-flash, litellm_params: { <<: *gemini_flash_base, vertex_location: europe-west4      }, model_info: *gemini_flash_cost }  # Netherlands
+  - { model_name: gemini-2.5-flash, litellm_params: { <<: *gemini_flash_base, vertex_location: europe-west8      }, model_info: *gemini_flash_cost }  # Milan
+  - { model_name: gemini-2.5-flash, litellm_params: { <<: *gemini_flash_base, vertex_location: europe-west9      }, model_info: *gemini_flash_cost }  # Paris
+  - { model_name: gemini-2.5-flash, litellm_params: { <<: *gemini_flash_base, vertex_location: europe-north1     }, model_info: *gemini_flash_cost }  # Finland
+  - { model_name: gemini-2.5-flash, litellm_params: { <<: *gemini_flash_base, vertex_location: europe-central2   }, model_info: *gemini_flash_cost }  # Warsaw
+  - { model_name: gemini-2.5-flash, litellm_params: { <<: *gemini_flash_base, vertex_location: europe-southwest1 }, model_info: *gemini_flash_cost }  # Madrid
+
+  # ── Claude Opus 4.6 (Vertex AI EU) ────────────────────────────────────────
+  - model_name: claude-opus-4.6
+    litellm_params:
+      model: vertex_ai/claude-opus-4-6
+      vertex_project: zalazium-gmbh
+      vertex_credentials: /app/google.json
+      vertex_location: europe-west1
+    model_info:
+      input_cost_per_token: 0.0000385
+      output_cost_per_token: 0.0001925
+      max_input_tokens: 200000
+      max_output_tokens: 32000
+      supports_vision: true
+      supports_function_calling: true
+
+  # ── Azure GPT-5.4 (Sweden) ──────────────────────────────────────
+  - model_name: azure-gpt-5.4
+    litellm_params:
+      model: azure/gpt-5.4
+      api_base: os.environ/AZURE_OPENAI_ENDPOINT_SWEDEN
+      api_key: os.environ/AZURE_API_KEY_SWEDEN
+      base_model: gpt-5.4
+      tpm: 1000000
+      rpm: 1000
+    model_info:
+      input_cost_per_token: 0.0000149800
+      output_cost_per_token: 0.0000856100
+      max_input_tokens: 270000
+
+  - model_name: azure-gpt-5.1
+    litellm_params:
+      model: azure/gpt-5.1
+      api_base: os.environ/AZURE_OPENAI_ENDPOINT_SWEDEN
+      api_key: os.environ/AZURE_API_KEY_SWEDEN
+      base_model: gpt-5.1
+      tpm: 1000000
+      rpm: 1000
+    model_info:
+      input_cost_per_token: 0.0000083300
+      output_cost_per_token: 0.0000647500
+      max_input_tokens: 270000
+
+  # ── Azure GPT-5.6 Luna (Sweden) ─────────────────────────────────
+  # Liste EU Data Zone: $1.10 in / $6.60 out per 1M (global: $1.00 / $6.00)
+  # Resell: Liste × 7 ÷ 1.14 (gleiches Muster wie gemini_35_flash_cost)
+  #   Input: 1.10 × 7 ÷ 1.14 = 6.7544 €/M    Output: 6.60 × 7 ÷ 1.14 = 40.5263 €/M
+  # base_model azure/eu/gpt-5.6-luna -> Registry-Limits 1.050.000 in / 128.000 out
+  - model_name: azure-gpt-5.6-luna
+    litellm_params:
+      model: azure/gpt-5.6-luna
+      api_base: os.environ/AZURE_OPENAI_ENDPOINT_SWEDEN
+      api_key: os.environ/AZURE_API_KEY_SWEDEN
+      base_model: azure/eu/gpt-5.6-luna
+      tpm: 2333000
+      rpm: 2333
+    model_info:
+      input_cost_per_token: 0.0000067544
+      output_cost_per_token: 0.0000405263
+
+  # ── Specialized (audio, image, embedding, OCR) ────────────────────────────
+  - model_name: azure-whisper
+    litellm_params:
+      model: azure/whisper
+      api_base: os.environ/AZURE_OPENAI_ENDPOINT_WHISPER
+      api_key: os.environ/AZURE_API_KEY_WHISPER
+      api_version: "2024-06-01"
+      response_format: verbose_json
+      base_model: whisper-1
+    model_info: { mode: audio_transcription, input_cost_per_second: 0.0006222222 }
+
+  - model_name: google-image
+    litellm_params:
+      model: vertex_ai/imagen-4.0-fast-generate-001
+      vertex_project: zalazium-gmbh
+      vertex_credentials: /app/google.json
+      vertex_location: europe-west1
+      drop_params: true
+    model_info: { mode: image_generation, output_cost_per_image: 0.15 }
+
+  - model_name: mistral-ocr
+    litellm_params:
+      model: azure_ai/mistral-document-ai-2505
+      api_key: os.environ/AZURE_OPENAI_API_KEY
+      api_base: os.environ/AZURE_OPENAI_ENDPOINT
+    model_info: { ocr_cost_per_page: 0.021 }
+
+  # ── Selfhosting STT / TTS / TTI (via Gateway, load-balanced) ──────────────
+  - model_name: zalazium-stt
+    litellm_params:
+      model: openai/whisper-1
+      api_base: http://172.17.0.1:18000/v1
+      api_key: "not-needed"
+      response_format: verbose_json
+    model_info: { mode: audio_transcription, input_cost_per_second: 0.0 }
+
+  - model_name: zalazium-tts
+    litellm_params:
+      model: openai/mistralai/Voxtral-4B-TTS-2603
+      api_base: http://172.17.0.1:18100/v1
+      api_key: "not-needed"
+    model_info: { mode: audio_speech, input_cost_per_character: 0.0 }
+
+  - model_name: zalazium-tti
+    litellm_params:
+      model: openai/hidream-o1-image-dev
+      api_base: http://172.17.0.1:19090/v1
+      api_key: "not-needed"
+      drop_params: true
+    model_info: { mode: image_generation }
+
+  # ── Selfhosting LLM – Qwen3.6-27B (vLLM @ QuantTrio AWQ, direct FRPC tunnel)
+  #
+  #  Backend (docker-compose service "llm"): QuantTrio/Qwen3.6-27B-AWQ
+  #    --max-model-len 262144  --reasoning-parser qwen3
+  #    --enable-auto-tool-choice  --tool-call-parser qwen3_coder
+  #    --speculative-config qwen3_next_mtp (2 Tokens, MTP-Speedup)
+  #    --default-chat-template-kwargs '{"enable_thinking": false}'
+
+  # Fast Instruct (no-think) — Chat, einfache Tool-Calls, MTP voll genutzt
+  - model_name: zalazium-ultra
+    litellm_params:
+      <<: *qwen_endpoint
+      max_tokens: 8192
+      temperature: 0.7
+      top_p: 0.8
+      extra_body: { top_k: 20, min_p: 0.0, repetition_penalty: 1.0, presence_penalty: 1.5 }
+      chat_template_kwargs: { enable_thinking: false }
+    model_info: { <<: *qwen_info, max_input_tokens: 253952, max_output_tokens: 8192 }   # 262144 − 8192
+
+  # Deep Reasoning (think, T=1.0) — Exploration, Architektur, Trade-offs
+  - model_name: zalazium-ultra-think
+    litellm_params:
+      <<: *qwen_thinking_base
+      max_tokens: 32768
+      temperature: 1.0
+    model_info: { <<: *qwen_info, max_input_tokens: 229376, max_output_tokens: 32768 }  # 262144 − 32768
+
+  # Precise Coding Agent (think, T=0.6) — Tool-Loops mit qwen3_coder Parser
+  - model_name: zalazium-ultra-coder
+    litellm_params:
+      <<: *qwen_thinking_base
+      max_tokens: 16384
+      temperature: 0.6
+    model_info: { <<: *qwen_info, max_input_tokens: 245760, max_output_tokens: 16384 }  # 262144 − 16384
