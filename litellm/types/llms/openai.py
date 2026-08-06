@@ -1,17 +1,6 @@
 from enum import Enum
 from os import PathLike
-from typing import (
-    IO,
-    Any,
-    Dict,
-    Iterable,
-    List,
-    Literal,
-    Mapping,
-    Optional,
-    Tuple,
-    Union,
-)
+from typing import Any, Dict, Final, IO, Iterable, List, Literal, Mapping, Optional, Tuple, Union
 
 import httpx
 from openai import Omit
@@ -145,7 +134,7 @@ class NotGiven:
         return "NOT_GIVEN"
 
 
-NOT_GIVEN = NotGiven()
+NOT_GIVEN: Final = NotGiven()
 
 
 class ToolResourcesCodeInterpreter(TypedDict, total=False):
@@ -529,6 +518,7 @@ class ChatCompletionDeltaToolCallChunk(TypedDict, total=False):
 
 class ChatCompletionCachedContent(TypedDict):
     type: Literal["ephemeral"]
+    ttl: NotRequired[Literal["5m", "1h"]]
 
 
 class ChatCompletionThinkingBlock(TypedDict, total=False):
@@ -839,7 +829,7 @@ ValidAssistantMessageContentTypesLiteral = Literal[
     "image_url",
 ]
 
-ValidAssistantMessageContentTypes = [
+ValidAssistantMessageContentTypes: Final = [
     "text",
     "thinking",
     "redacted_thinking",
@@ -862,7 +852,7 @@ ValidChatCompletionMessageContentTypesLiteral = Literal[
     "redacted_thinking",
 ]
 
-ValidChatCompletionMessageContentTypes = [
+ValidChatCompletionMessageContentTypes: Final = [
     "text",
     "image_url",
     "input_audio",
@@ -1144,6 +1134,10 @@ class ContextManagementEntry(TypedDict, total=False):
     """Token threshold at which compaction is triggered for this entry. Minimum 1000."""
 
 
+class ResponsesAPIStreamOptions(TypedDict, total=False):
+    include_obfuscation: bool
+
+
 class ResponsesAPIOptionalRequestParams(TypedDict, total=False):
     """TypedDict for Optional parameters supported by the responses API."""
 
@@ -1170,7 +1164,7 @@ class ResponsesAPIOptionalRequestParams(TypedDict, total=False):
     max_tool_calls: Optional[int]
     prompt_cache_key: Optional[str]
     prompt_cache_retention: Optional[str]
-    stream_options: Optional[dict]
+    stream_options: Optional[ResponsesAPIStreamOptions]
     top_logprobs: Optional[int]
     partial_images: Optional[int]  # Number of partial images to generate (1-3) for streaming image generation
     context_management: Optional[List[ContextManagementEntry]]
@@ -1313,7 +1307,7 @@ class ResponsesAPIResponse(BaseLiteLLMOpenAIResponseObject):
 
         Issue: https://github.com/BerriAI/litellm/issues/16824
         """
-        serialized = handler(value)
+        serialized: Final = handler(value)
         if not isinstance(serialized, list):
             return serialized
         return [
@@ -1334,7 +1328,7 @@ class ResponsesAPIResponse(BaseLiteLLMOpenAIResponseObject):
 
         This matches the OpenAI SDK's Response.output_text behavior.
         """
-        texts: List[str] = []
+        texts: Final[List[str]] = []
         for output_item in self.output:
             # Handle both dict and object access patterns
             if isinstance(output_item, dict):
@@ -1399,6 +1393,10 @@ class ResponsesAPIStreamEvents(str, Enum):
     # Function call events
     FUNCTION_CALL_ARGUMENTS_DELTA = "response.function_call_arguments.delta"
     FUNCTION_CALL_ARGUMENTS_DONE = "response.function_call_arguments.done"
+
+    # Custom tool call events (grammar/freeform tools, e.g. Cursor agent tools)
+    CUSTOM_TOOL_CALL_INPUT_DELTA = "response.custom_tool_call_input.delta"
+    CUSTOM_TOOL_CALL_INPUT_DONE = "response.custom_tool_call_input.done"
 
     # File search events
     FILE_SEARCH_CALL_IN_PROGRESS = "response.file_search_call.in_progress"

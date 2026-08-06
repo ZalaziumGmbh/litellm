@@ -6,7 +6,7 @@ All values are configurable via proxy config.yaml.
 """
 
 from enum import Enum
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -22,14 +22,17 @@ class ComplexityTier(str, Enum):
     REASONING = "REASONING"
 
 
-TIER_SEVERITY_ORDER: tuple[ComplexityTier, ...] = (
+TIER_SEVERITY_ORDER: Final[tuple[ComplexityTier, ...]] = (
     ComplexityTier.SIMPLE,
     ComplexityTier.MEDIUM,
     ComplexityTier.COMPLEX,
     ComplexityTier.REASONING,
 )
 
-DEFAULT_TIER_DISTANCE_PENALTY: float = 0.5
+DEFAULT_TIER_DISTANCE_PENALTY: Final[float] = 0.5
+
+DEFAULT_CLASSIFIER_CONTEXT_WINDOW_SIZE: Final[int] = 3
+DEFAULT_CLASSIFIER_CONTEXT_PER_TURN_CHARS: Final[int] = 200
 
 
 class KeywordTierRule(BaseModel):
@@ -49,7 +52,7 @@ class KeywordTierRule(BaseModel):
         # _keyword_matches treats "" / " " as a substring that matches essentially every
         # prompt, so a single stray blank would silently force this rule's tier for all
         # traffic. Require at least one real keyword to remain.
-        cleaned = [stripped for keyword in self.keywords if (stripped := keyword.strip())]
+        cleaned: Final = [stripped for keyword in self.keywords if (stripped := keyword.strip())]
         if not cleaned:
             raise ValueError("keyword_tier_rules entries must contain at least one non-empty keyword")
         self.keywords = cleaned
@@ -60,7 +63,7 @@ class KeywordTierRule(BaseModel):
 # Note: Keywords should be full words/phrases to avoid substring false positives.
 # The matching logic uses word boundary detection for single-word keywords.
 
-DEFAULT_CODE_KEYWORDS: list[str] = [
+DEFAULT_CODE_KEYWORDS: Final[list[str]] = [
     "function",
     "class",
     "def",
@@ -108,7 +111,7 @@ DEFAULT_CODE_KEYWORDS: list[str] = [
     "pull request",
 ]
 
-DEFAULT_REASONING_KEYWORDS: list[str] = [
+DEFAULT_REASONING_KEYWORDS: Final[list[str]] = [
     "step by step",
     "think through",
     "let's think",
@@ -130,7 +133,7 @@ DEFAULT_REASONING_KEYWORDS: list[str] = [
     "conclude",
 ]
 
-DEFAULT_TECHNICAL_KEYWORDS: list[str] = [
+DEFAULT_TECHNICAL_KEYWORDS: Final[list[str]] = [
     "architecture",
     "distributed",
     "scalable",
@@ -162,7 +165,10 @@ DEFAULT_TECHNICAL_KEYWORDS: list[str] = [
     # Note: "async", "kubernetes", "docker" are in DEFAULT_CODE_KEYWORDS
 ]
 
-DEFAULT_SIMPLE_KEYWORDS: list[str] = [
+DEFAULT_ESCALATION_KEYWORDS: Final[list[str]] = ["LITELLM ESCALATE"]
+
+
+DEFAULT_SIMPLE_KEYWORDS: Final[list[str]] = [
     "what is",
     "what's",
     "define",
@@ -195,7 +201,7 @@ DEFAULT_SIMPLE_KEYWORDS: list[str] = [
 
 # ─── Default Dimension Weights ───
 
-DEFAULT_DIMENSION_WEIGHTS: dict[str, float] = {
+DEFAULT_DIMENSION_WEIGHTS: Final[dict[str, float]] = {
     "tokenCount": 0.10,  # Reduced - length is less important than content
     "codePresence": 0.30,  # High - code requests need capable models
     "reasoningMarkers": 0.25,  # High - explicit reasoning requests
@@ -208,7 +214,7 @@ DEFAULT_DIMENSION_WEIGHTS: dict[str, float] = {
 
 # ─── Default Tier Boundaries ───
 
-DEFAULT_TIER_BOUNDARIES: dict[str, float] = {
+DEFAULT_TIER_BOUNDARIES: Final[dict[str, float]] = {
     "simple_medium": 0.15,  # Lower threshold to catch more MEDIUM cases
     "medium_complex": 0.35,  # Lower threshold to catch technical COMPLEX cases
     "complex_reasoning": 0.60,  # Reasoning tier reserved for explicit reasoning markers
@@ -217,7 +223,7 @@ DEFAULT_TIER_BOUNDARIES: dict[str, float] = {
 
 # ─── Default Token Thresholds ───
 
-DEFAULT_TOKEN_THRESHOLDS: dict[str, int] = {
+DEFAULT_TOKEN_THRESHOLDS: Final[dict[str, int]] = {
     "simple": 15,  # Only very short prompts (<15 tokens) are penalized
     "complex": 400,  # Long prompts (>400 tokens) get complexity boost
 }
@@ -225,7 +231,7 @@ DEFAULT_TOKEN_THRESHOLDS: dict[str, int] = {
 
 # ─── Default Tier to Model Mapping ───
 
-DEFAULT_TIER_MODELS: dict[str, str] = {
+DEFAULT_TIER_MODELS: Final[dict[str, str]] = {
     "SIMPLE": "gpt-4o-mini",
     "MEDIUM": "gpt-4o",
     "COMPLEX": "claude-sonnet-4-20250514",
@@ -308,6 +314,14 @@ class ComplexityRouterConfig(BaseModel):
         description="Default model to use if tier cannot be determined",
     )
 
+    return_raw_model_name: bool = Field(
+        default=False,
+        description=(
+            "Return the resolved raw model name in the response model field instead of "
+            "the client-requested complexity-router alias"
+        ),
+    )
+
     # Classifier strategy
     classifier_type: Literal["heuristic", "llm"] = Field(
         default="heuristic",
@@ -316,6 +330,45 @@ class ComplexityRouterConfig(BaseModel):
     classifier_llm_config: ClassifierLLMConfig | None = Field(
         default=None,
         description="Configuration for the LLM classifier; required when classifier_type is 'llm'",
+    )
+
+    classifier_context_window_size: int = Field(
+        default=DEFAULT_CLASSIFIER_CONTEXT_WINDOW_SIZE,
+        ge=0,
+        description=(
+            "Number of prior user turns (tool output and harness reminders excluded) to include as context "
+            "in the LLM classifier prompt, so a follow-up like 'now do the same for the streaming path' is "
+            "classified against what it refers to. Counts turns of both roles when "
+            "classifier_context_include_assistant_turns is enabled. These turns are sent to the classifier "
+            "model, which may "
+            "be a different deployment or provider than the routed completion model; that call already "
+            "carries the current user ask and the caller's system prompt in full. Set to 0 to send neither "
+            "prior turns nor any conversation context beyond the current ask. Only applies when "
+            "classifier_type is 'llm'."
+        ),
+    )
+    classifier_context_per_turn_chars: int = Field(
+        default=DEFAULT_CLASSIFIER_CONTEXT_PER_TURN_CHARS,
+        gt=0,
+        description=(
+            "Maximum character length for each prior turn's text in the classifier context window. "
+            "Turns exceeding this are truncated. Only applies when classifier_type is 'llm'."
+        ),
+    )
+    classifier_context_include_assistant_turns: bool = Field(
+        default=False,
+        description=(
+            "Include assistant turns in the classifier context window, so difficulty stated by the "
+            "model rather than by the user stays visible: a plan the assistant calls complex, which "
+            "the user approves with 'yes', is classified on the work being approved instead of on the "
+            "word 'yes'. When enabled, classifier_context_window_size counts the last N turns of the "
+            "conversation across both roles rather than the last N user turns, and assistant text is "
+            "sent to the classifier model, which may be a different deployment or provider than the "
+            "routed completion model. Assistant replies share classifier_context_per_turn_chars with "
+            "user turns, so raise it if replies are truncated before the part that carries the "
+            "difficulty. Off by default because enabling it shifts tier decisions, and therefore "
+            "spend, for an already-deployed router. Only applies when classifier_type is 'llm'."
+        ),
     )
 
     adaptive: bool = Field(
@@ -336,6 +389,16 @@ class ComplexityRouterConfig(BaseModel):
         description=(
             "When adaptive=True: 'all' scores every pool model with a tier-distance penalty (soft floors); "
             "'classified_tier' Thompson-samples only inside the classified tier's pool"
+        ),
+    )
+
+    escalation_keywords: list[str] | None = Field(
+        default=None,
+        description=(
+            "Case-sensitive phrases a user can include to force a bump to the next-higher "
+            "complexity tier when they aren't satisfied with results (they can force a stronger "
+            "model, but not choose which one). Defaults to ['LITELLM ESCALATE'] when unset; "
+            "set to an empty list to disable."
         ),
     )
 
@@ -363,13 +426,13 @@ class ComplexityRouterConfig(BaseModel):
 
     # Session affinity: pin the first turn's routed model for the rest of the session
     session_affinity: bool = Field(
-        default=True,
+        default=False,
         description=(
             "When True and a session_id is resolvable on the request, pin the model chosen on the "
             "session's first turn and reuse it for every later turn, skipping re-classification. "
-            "On by default so multi-turn sessions stay on one model, preserving provider prompt "
-            "caches and avoiding cross-model conversation-history errors. Set False to reclassify "
-            "every turn."
+            "Off by default so every turn is classified on its own merits and routed to the cheapest "
+            "adequate tier. Set True to keep a multi-turn session on one model, which preserves "
+            "provider prompt caches and avoids cross-model conversation-history errors."
         ),
     )
     session_affinity_ttl_seconds: int = Field(
@@ -390,7 +453,7 @@ class ComplexityRouterConfig(BaseModel):
     def _coerce_tier_values(cls, value: object) -> object:
         if not isinstance(value, dict):
             return value
-        coerced: dict[str, object] = {}
+        coerced: Final[dict[str, object]] = {}
         for key, item in value.items():
             if isinstance(item, str):
                 coerced[key] = item
@@ -399,6 +462,13 @@ class ComplexityRouterConfig(BaseModel):
             else:
                 coerced[key] = item
         return coerced
+
+    @field_validator("escalation_keywords")
+    @classmethod
+    def _normalize_escalation_keywords(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        return [stripped for keyword in value if (stripped := keyword.strip())]
 
     @model_validator(mode="after")
     def _validate_llm_classifier_config(self) -> "ComplexityRouterConfig":
@@ -413,7 +483,7 @@ class ComplexityRouterConfig(BaseModel):
         normalized = {tier: (models if isinstance(models, list) else [models]) for tier, models in self.tiers.items()}
         if not any(normalized.values()):
             raise ValueError("adaptive=True requires at least one non-empty tier pool")
-        empty = [tier for tier, models in normalized.items() if not models]
+        empty: Final = [tier for tier, models in normalized.items() if not models]
         if empty:
             raise ValueError(f"adaptive=True tier pools must be non-empty; empty tiers: {empty}")
         self.tiers = normalized
@@ -440,4 +510,4 @@ class ComplexityRouterConfig(BaseModel):
 
 
 # Combined default config
-DEFAULT_COMPLEXITY_CONFIG = ComplexityRouterConfig()
+DEFAULT_COMPLEXITY_CONFIG: Final = ComplexityRouterConfig()
