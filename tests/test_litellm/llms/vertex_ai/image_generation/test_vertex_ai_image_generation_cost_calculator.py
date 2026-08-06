@@ -55,6 +55,35 @@ def test_vertex_image_generation_cost_adds_web_search_grounding():
     assert round(grounded - ungrounded, 10) == round(expected_web_search_cost, 10)
 
 
+def test_vertex_gemini_flash_lite_image_bills_output_image_tokens():
+    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    litellm.model_cost = litellm.get_model_cost_map(url="")
+
+    cost = vertex_image_generation_cost_calculator(
+        model="gemini-3.1-flash-lite-image",
+        image_response=_image_response_with_web_search(None),
+    )
+
+    assert round(cost, 10) == round(1120 * 3e-05 + 20 * 2.5e-07, 10)
+
+
+def test_vertex_gemini_flash_lite_image_is_half_the_price_of_flash_image():
+    os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    litellm.model_cost = litellm.get_model_cost_map(url="")
+
+    lite_cost = vertex_image_generation_cost_calculator(
+        model="gemini-3.1-flash-lite-image",
+        image_response=_image_response_with_web_search(None),
+    )
+    flash_cost = vertex_image_generation_cost_calculator(
+        model="gemini-3.1-flash-image",
+        image_response=_image_response_with_web_search(None),
+    )
+
+    assert lite_cost > 0
+    assert round(flash_cost / lite_cost, 6) == 2.0
+
+
 def test_vertex_image_generation_cost_no_web_search_when_absent():
     os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
     litellm.model_cost = litellm.get_model_cost_map(url="")

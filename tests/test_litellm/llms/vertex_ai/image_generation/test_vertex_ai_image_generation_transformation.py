@@ -583,6 +583,16 @@ class TestGetVertexAIImageGenerationConfig:
         config = get_vertex_ai_image_generation_config("vertex_ai/gemini-2.5-flash-image")
         assert isinstance(config, VertexAIGeminiImageGenerationConfig)
 
+    def test_get_gemini_3_1_image_config(self):
+        """Imagen migration targets must use generateContent, not the Imagen predict API"""
+        for model in (
+            "gemini-3.1-flash-image",
+            "gemini-3.1-flash-lite-image",
+            "vertex_ai/gemini-3.1-flash-lite-image",
+        ):
+            config = get_vertex_ai_image_generation_config(model)
+            assert isinstance(config, VertexAIGeminiImageGenerationConfig), model
+
     def test_get_imagen_model_config(self):
         """Test that Imagen models return Imagen config"""
         config = get_vertex_ai_image_generation_config("imagegeneration@006")

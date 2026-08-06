@@ -178,12 +178,12 @@ model_list:
 
   - model_name: google-image
     litellm_params:
-      model: vertex_ai/imagen-4.0-fast-generate-001
+      model: vertex_ai/gemini-3.1-flash-lite-image
       vertex_project: zalazium-gmbh
       vertex_credentials: /app/google.json
       vertex_location: europe-west1
       drop_params: true
-    model_info: { mode: image_generation, output_cost_per_image: 0.15 }
+    model_info: { mode: image_generation }
 
   - model_name: mistral-ocr
     litellm_params:
