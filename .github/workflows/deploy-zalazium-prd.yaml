@@ -10,18 +10,28 @@ jobs:
     steps:
       - name: Checkout master
         uses: actions/checkout@v3
-      
-      # Use Docker login GitHub Action
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v2
         with:
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_TOKEN }}
-      
-      # Build a Docker image of your application and tag the image with the latest commit SHA
+
+      # BuildKit resolves base images without the docker login credentials
+      # (docker/login-action#862), so Hub pulls land in the anonymous quota
+      # that GitHub's shared runner IPs keep exhausted. The mirror serves the
+      # same digests, so the pins in the Dockerfile still hold.
       - name: Build container image
-        run: docker build -t ${{ secrets.DOCKER_USER }}/litellm:prd .
-      
-      # Push image to Docker Hub
+        run: |
+          syntax=$(sed -n 's|^# syntax=||p' Dockerfile | head -1)
+          ui=$(sed -n 's|^ARG UI_BUILD_IMAGE=||p' Dockerfile | head -1)
+          : "${syntax:?no '# syntax=' line in Dockerfile}"
+          : "${ui:?no 'ARG UI_BUILD_IMAGE=' line in Dockerfile}"
+          case "$ui" in */*) ;; *) ui="library/$ui" ;; esac
+          docker build \
+            --build-arg "BUILDKIT_SYNTAX=mirror.gcr.io/$syntax" \
+            --build-arg "UI_BUILD_IMAGE=mirror.gcr.io/$ui" \
+            -t "${{ secrets.DOCKER_USER }}/litellm:prd" .
+
       - name: Push image to Docker Hub
         run: docker push ${{ secrets.DOCKER_USER }}/litellm:prd
