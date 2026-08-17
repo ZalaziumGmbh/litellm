@@ -44,6 +44,7 @@ from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
 )
 from litellm.proxy.utils import is_known_model
 from litellm.proxy.vector_store_endpoints.utils import (
+    assert_proxy_admin_for_vector_store_index_management,
     assert_user_can_access_vector_store,
     get_litellm_managed_vector_store,
     is_allowed_to_call_vector_store_endpoint,
@@ -60,6 +61,7 @@ from .passthrough_endpoint_router import PassthroughEndpointRouter
 
 vertex_llm_base: Final = VertexBase()
 router: Final = APIRouter()
+openai_passthrough_router: Final = APIRouter()
 default_vertex_config: Final = None
 
 passthrough_endpoint_router: Final = PassthroughEndpointRouter()
@@ -841,7 +843,7 @@ async def handle_bedrock_count_tokens(
                 # Copy all litellm_params - BaseAWSLLM will handle AWS credential discovery
                 for key, value in model_litellm_params.items():
                     if key != "user_api_key_dict":  # Don't overwrite user_api_key_dict
-                        litellm_params[key] = value  # type: ignore
+                        litellm_params[key] = value
 
         verbose_proxy_logger.debug("Count tokens litellm_params: %s", litellm_params)
         verbose_proxy_logger.debug("Resolved model: %s", resolved_model)
@@ -1039,7 +1041,7 @@ async def bedrock_proxy_route(
     from litellm.llms.bedrock.chat import BedrockConverseLLM
 
     bedrock_llm: Final = BedrockConverseLLM()
-    credentials: Final[Credentials] = bedrock_llm.get_credentials()  # type: ignore
+    credentials: Final[Credentials] = bedrock_llm.get_credentials()
     sigv4: Final = SigV4Auth(credentials, "bedrock", aws_region_name)
     headers: Final = {"Content-Type": "application/json"}
     # Assuming the body contains JSON data, parse it
@@ -1060,7 +1062,7 @@ async def bedrock_proxy_route(
     endpoint_func: Final = create_pass_through_route(
         endpoint=endpoint,
         target=str(prepped.url),
-        custom_headers=prepped.headers,  # type: ignore
+        custom_headers=prepped.headers,
         is_streaming_request=is_streaming_request,
         _forward_headers=True,
     )  # dynamically construct pass-through endpoint based on incoming path
@@ -1233,6 +1235,37 @@ async def assemblyai_proxy_route(
     return received_value
 
 
+def get_azure_ai_search_index_from_endpoint(endpoint: str) -> str | None:
+    """Return the index name in the ``/indexes/{name}`` position of an Azure AI
+    Search passthrough path, or ``None`` when the path targets no index.
+
+    Only the segment immediately after ``indexes`` is the operable target. Any
+    other segment (for example the trailing ``index`` in ``.../docs/index``) must
+    never be treated as the index, otherwise a caller authorized on one index
+    could have Azure apply the operation to a different index on the same service.
+    """
+    segments: Final = endpoint.split("?", 1)[0].strip("/").split("/")
+    for position, segment in enumerate(segments):
+        if segment == "indexes" and position + 1 < len(segments):
+            return segments[position + 1] or None
+    return None
+
+
+def is_azure_ai_search_service_level_index_create(method: str, endpoint: str) -> bool:
+    """Return True for ``POST /indexes``, Azure AI Search's service-level index create.
+
+    No index name appears in that path, so ``get_azure_ai_search_index_from_endpoint``
+    yields None and the managed-index branch can never claim the request. Without an
+    explicit guard it reaches the generic Azure passthrough on the proxy's own
+    credential, so a non-admin could create an index whenever ``AZURE_API_BASE``
+    points at the Search service.
+    """
+    if method != "POST":
+        return False
+    path: Final = endpoint.split("?", 1)[0].strip("/")
+    return path == "indexes" or path.endswith("/indexes")
+
+
 @router.api_route(
     "/azure_ai/{endpoint:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
@@ -1258,9 +1291,14 @@ async def azure_proxy_route(
     """
     from litellm.proxy.proxy_server import llm_router
 
+    if is_azure_ai_search_service_level_index_create(method=request.method, endpoint=endpoint):
+        assert_proxy_admin_for_vector_store_index_management(user_api_key_dict, operation="create")
+
     parts: Final = endpoint.split(
         "/"
     )  # azure model is in the url - e.g. https://{endpoint}/openai/deployments/{deployment-id}/completions?api-version=2024-10-21
+
+    search_index_name: Final = get_azure_ai_search_index_from_endpoint(endpoint)
 
     if len(parts) > 1 and llm_router:
         for part in parts:
@@ -1270,9 +1308,9 @@ async def azure_proxy_route(
             )
             # check if vector store index
             is_vector_store_index = (
-                (litellm.vector_store_index_registry.is_vector_store_index(vector_store_index_name=part))
-                if litellm.vector_store_index_registry is not None
-                else False
+                part == search_index_name
+                and litellm.vector_store_index_registry is not None
+                and litellm.vector_store_index_registry.is_vector_store_index(vector_store_index_name=part)
             )
 
             if is_router_model:
@@ -1729,7 +1767,7 @@ async def _base_vertex_proxy_route(
         headers_passed_through,
         vertex_project,
         vertex_location,
-    ) = await _prepare_vertex_auth_headers(  # type: ignore
+    ) = await _prepare_vertex_auth_headers(
         request=request,
         vertex_credentials=vertex_credentials,
         router_credentials=router_credentials,
@@ -1875,7 +1913,7 @@ async def vertex_proxy_route(
     )
 
 
-@router.api_route(
+@openai_passthrough_router.api_route(
     "/openai_passthrough/{endpoint:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     tags=["OpenAI Pass-through", "pass-through"],
@@ -1971,7 +2009,7 @@ class BaseOpenAIPassThroughHandler:
             custom_headers=BaseOpenAIPassThroughHandler._assemble_headers(
                 api_key=api_key, request=request, extra_headers=extra_headers
             ),
-            is_streaming_request=is_streaming_request,  # type: ignore
+            is_streaming_request=is_streaming_request,
             custom_llm_provider=(
                 custom_llm_provider.value
                 if hasattr(custom_llm_provider, "value")
