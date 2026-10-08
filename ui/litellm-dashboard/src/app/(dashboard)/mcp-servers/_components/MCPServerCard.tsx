@@ -14,6 +14,7 @@ import { cn } from "@/lib/cva.config";
 import { AUTH_TYPE, type MCPServer } from "@/components/mcp_tools/types";
 import { Logo } from "@/components/molecules/logo/Logo";
 import { getMaskedAndFullUrl } from "./utils";
+import { STDIO_DISABLED_MESSAGE } from "./StdioAvailability";
 
 interface MCPServerCardProps {
   server: MCPServer;
@@ -21,6 +22,7 @@ interface MCPServerCardProps {
   // Computed by the parent from the bulk /user-env-vars/status response, so
   // the card never issues a per-row request (no N+1).
   missingUserFields?: string[];
+  hasUserFields?: boolean;
   isLoadingHealth?: boolean;
   isRechecking?: boolean;
   onClick: () => void;
@@ -28,12 +30,13 @@ interface MCPServerCardProps {
   onByokConnect?: () => void;
   onOpenFillFields?: () => void;
   onDelete?: () => void;
+  stdioEnabled?: boolean;
 }
 
 const HEALTH_TONE: Record<string, { dot: string }> = {
-  healthy: { dot: "bg-green-500" },
-  unhealthy: { dot: "bg-red-500" },
-  unknown: { dot: "bg-gray-300" },
+  healthy: { dot: "bg-success" },
+  unhealthy: { dot: "bg-destructive" },
+  unknown: { dot: "bg-border" },
 };
 
 // Stop card-level click handler from firing when an interactive child is used.
@@ -42,6 +45,7 @@ const stop = (e: MouseEvent | KeyboardEvent) => e.stopPropagation();
 const MCPServerCard: FC<MCPServerCardProps> = ({
   server,
   missingUserFields,
+  hasUserFields,
   isLoadingHealth,
   isRechecking,
   onClick,
@@ -49,6 +53,7 @@ const MCPServerCard: FC<MCPServerCardProps> = ({
   onByokConnect,
   onOpenFillFields,
   onDelete,
+  stdioEnabled = true,
 }) => {
   const alias = server.alias || server.server_name || "";
   const name = server.server_name || alias || server.server_id;
@@ -100,6 +105,7 @@ const MCPServerCard: FC<MCPServerCardProps> = ({
   }
 
   const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       onClick();
@@ -216,6 +222,19 @@ const MCPServerCard: FC<MCPServerCardProps> = ({
           />
           <Badge variant="outline">{displayTransport.toUpperCase()}</Badge>
           <Badge variant="outline">{authType}</Badge>
+          {transport === "stdio" && !stdioEnabled && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Badge variant="outline">
+                    <CircleAlert />
+                    stdio disabled
+                  </Badge>
+                }
+              />
+              <TooltipContent>{STDIO_DISABLED_MESSAGE}</TooltipContent>
+            </Tooltip>
+          )}
           {oauthFlowUnset && (
             <Tooltip>
               <TooltipTrigger
@@ -233,7 +252,7 @@ const MCPServerCard: FC<MCPServerCardProps> = ({
             </Tooltip>
           )}
           <Badge variant="outline">
-            <span className={cn("h-1.5 w-1.5 rounded-full", isPublic ? "bg-green-500" : "bg-orange-500")} />
+            <span className={cn("h-1.5 w-1.5 rounded-full", isPublic ? "bg-success" : "bg-warning")} />
             {isPublic ? "Public" : "Internal"}
           </Badge>
           {accessGroups.slice(0, 2).map((g) => (
@@ -256,9 +275,10 @@ const MCPServerCard: FC<MCPServerCardProps> = ({
           )}
         </div>
 
-        {(server.is_byok || needsAttention) && (
+        {(server.is_byok || hasUserFields || needsAttention) && (
           <div className="mt-auto flex flex-col gap-2">
             {server.is_byok && <ByokRow connected={!!server.has_user_credential} onConnect={onByokConnect} />}
+            {hasUserFields && !needsAttention && <UserFieldsRow onUpdate={onOpenFillFields} />}
             {needsAttention && (
               <div className="flex items-center justify-between gap-2 text-xs">
                 <Tooltip>
@@ -364,6 +384,29 @@ const HealthChip: FC<HealthChipProps> = ({
     </Tooltip>
   );
 };
+
+const UserFieldsRow: FC<{ onUpdate?: () => void }> = ({ onUpdate }) => (
+  <div className="flex items-center justify-between gap-2 text-xs">
+    <span className="text-muted-foreground">Per-user credentials</span>
+    <div className="flex items-center gap-2">
+      <Badge variant="outline">
+        <Check /> Set
+      </Badge>
+      {onUpdate && (
+        <Button
+          variant="link"
+          size="sm"
+          onClick={(e) => {
+            stop(e);
+            onUpdate();
+          }}
+        >
+          Update
+        </Button>
+      )}
+    </div>
+  </div>
+);
 
 interface ByokRowProps {
   connected: boolean;
