@@ -1,14 +1,16 @@
+import base64
 import json
 import os
 import sys
+from typing import Final
 from unittest.mock import MagicMock, Mock, patch
 
 import httpx
 import pytest
+import respx
+from google.auth.credentials import Credentials
 
-sys.path.insert(
-    0, os.path.abspath("../../../../..")
-)  # Adds the parent directory to the system path
+sys.path.insert(0, os.path.abspath("../../../../.."))  # Adds the parent directory to the system path
 
 import litellm
 from litellm.llms.vertex_ai.text_to_speech.transformation import (
@@ -16,8 +18,95 @@ from litellm.llms.vertex_ai.text_to_speech.transformation import (
 )
 
 
+@pytest.mark.asyncio
+async def test_google_speech_router_uses_eu_endpoints(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DISABLE_AIOHTTP_TRANSPORT", "True")
+    audio: Final = b"RIFF....WAVE"
+    credentials: Final = MagicMock(spec=Credentials, token="test-token", expired=False, valid=True)
+    tts: Final = respx_mock.post("https://eu-texttospeech.googleapis.com/v1/text:synthesize").respond(
+        200, json={"audioContent": base64.b64encode(audio).decode()}
+    )
+    stt: Final = respx_mock.post(
+        "https://eu-speech.googleapis.com/v2/projects/test-project/locations/eu/recognizers/_:recognize"
+    ).respond(
+        200,
+        json={
+            "results": [{"alternatives": [{"transcript": "Guten Tag"}], "languageCode": "de-DE"}],
+            "metadata": {"totalBilledDuration": "1s"},
+        },
+    )
+    router: Final = litellm.Router(
+        model_list=[
+            {
+                "model_name": "google-tts",
+                "litellm_params": {
+                    "model": "vertex_ai/chirp",
+                    "vertex_project": "test-project",
+                    "vertex_location": "eu",
+                    "api_base": "https://eu-texttospeech.googleapis.com/v1/text:synthesize",
+                    "voice_mappings": {"F1": "de-DE-Chirp3-HD-Kore"},
+                },
+            },
+            {
+                "model_name": "google-stt",
+                "litellm_params": {
+                    "model": "vertex_ai/chirp_3",
+                    "vertex_project": "test-project",
+                    "vertex_location": "eu",
+                    "api_base": "https://eu-speech.googleapis.com",
+                },
+            },
+        ],
+        num_retries=0,
+    )
+
+    with patch("google.auth.default", return_value=(credentials, "test-project")):
+        speech: Final = await router.aspeech(model="google-tts", input="Guten Tag", voice="F1", response_format="wav")
+        transcript: Final = await router.atranscription(
+            model="google-stt", file=("utterance.wav", audio, "audio/wav"), language="de"
+        )
+
+    assert speech.content == audio
+    assert transcript.text == "Guten Tag"
+    assert transcript["duration"] == 1.0
+    assert tts.call_count == stt.call_count == 1
+    tts_body: Final = json.loads(tts.calls[0].request.content)
+    assert tts_body["voice"] == {"languageCode": "de-DE", "name": "de-DE-Chirp3-HD-Kore"}
+    assert tts_body["audioConfig"]["audioEncoding"] == "LINEAR16"
+    assert "voice_mappings" not in tts_body
+    stt_body: Final = json.loads(stt.calls[0].request.content)
+    assert stt_body["config"]["model"] == "chirp_3"
+    assert stt_body["config"]["languageCodes"] == ["de-DE"]
+    assert base64.b64decode(stt_body["content"]) == audio
+    assert stt.calls[0].request.headers["Authorization"] == "Bearer test-token"
+
+
 class TestVertexAITextToSpeechConfig:
     """Tests for VertexAITextToSpeechConfig transformation"""
+
+    @pytest.mark.parametrize("voice", ["F1", "de-DE-Chirp3-HD-Kore"])
+    def test_configured_alias_and_native_voice_with_eu_wav(self, voice: str) -> None:
+        config: Final = VertexAITextToSpeechConfig()
+        mapped_voice, params = config.map_openai_params(
+            model="chirp",
+            voice=voice,
+            optional_params={"response_format": "wav"},
+            kwargs={"voice_mappings": {"F1": "de-DE-Chirp3-HD-Kore"}},
+        )
+        assert mapped_voice == "de-DE-Chirp3-HD-Kore"
+        assert params["vertex_voice_dict"] == {"languageCode": "de-DE", "name": "de-DE-Chirp3-HD-Kore"}
+        assert params["audioEncoding"] == "LINEAR16"
+        assert "voice_mappings" not in params
+        assert (
+            config.get_complete_url(
+                model="chirp",
+                api_base="https://eu-texttospeech.googleapis.com/v1/text:synthesize",
+                litellm_params={"vertex_location": "eu"},
+            )
+            == "https://eu-texttospeech.googleapis.com/v1/text:synthesize"
+        )
 
     def test_get_complete_url(self):
         """Test that get_complete_url returns the correct Google Cloud TTS API URL"""
@@ -171,8 +260,8 @@ def test_litellm_speech_vertex_ai_chirp(mock_get_token, mock_ensure_token, mock_
     )
 
     # Verify request body structure
-    assert "data" in call_kwargs
-    request_body = json.loads(call_kwargs["data"])
+    assert "json" in call_kwargs
+    request_body = call_kwargs["json"]
 
     # Verify input
     assert "input" in request_body

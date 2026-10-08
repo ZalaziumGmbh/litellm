@@ -1,11 +1,54 @@
 import json
+from typing import Final
 from unittest.mock import Mock, patch
 
 import httpx
 import pytest
+import respx
+from pydantic import ValidationError
 
 import litellm
 from litellm.llms.azure.text_to_speech.transformation import AzureAVATextToSpeechConfig
+
+
+@pytest.mark.asyncio
+async def test_router_voice_alias_and_wav_on_eu_endpoint(
+    respx_mock: respx.MockRouter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DISABLE_AIOHTTP_TRANSPORT", "True")
+    audio: Final = b"RIFF....WAVE"
+    endpoint: Final = respx_mock.post("https://westeurope.tts.speech.microsoft.com/cognitiveservices/v1").respond(
+        200, content=audio, headers={"Content-Type": "audio/wav"}
+    )
+    router: Final = litellm.Router(
+        model_list=[
+            {
+                "model_name": "azure-tts",
+                "litellm_params": {
+                    "model": "azure/speech/azure-tts",
+                    "api_base": "https://westeurope.tts.speech.microsoft.com",
+                    "api_key": "test-speech-key",
+                    "voice_mappings": {"F1": "de-DE-KatjaNeural"},
+                },
+            }
+        ],
+        num_retries=0,
+    )
+    response: Final = await router.aspeech(model="azure-tts", input="Guten Tag", voice="F1", response_format="wav")
+    assert response.content == audio
+    assert endpoint.call_count == 1
+    request: Final = endpoint.calls[0].request
+    assert "de-DE-KatjaNeural" in request.content.decode()
+    assert "voice_mappings" not in request.content.decode()
+    assert request.headers["X-Microsoft-OutputFormat"] == "riff-24khz-16bit-mono-pcm"
+    assert request.headers["Ocp-Apim-Subscription-Key"] == "test-speech-key"
+
+
+def test_invalid_voice_mapping_rejected() -> None:
+    with pytest.raises(ValidationError):
+        AzureAVATextToSpeechConfig().map_openai_params(
+            model="speech/azure-tts", optional_params={}, voice="F1", kwargs={"voice_mappings": {"F1": 123}}
+        )
 
 
 @pytest.fixture

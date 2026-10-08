@@ -8241,6 +8241,17 @@
         "mode": "audio_speech",
         "source": "https://azure.microsoft.com/en-us/pricing/calculator/"
     },
+    "azure/speech/azure-stt-fast": {
+        "audio_transcription_config": "azure_speech",
+        "input_cost_per_second": 0.0001,
+        "litellm_provider": "azure",
+        "mode": "audio_transcription",
+        "output_cost_per_second": 0.0,
+        "source": "https://azure.microsoft.com/en-us/pricing/details/speech/",
+        "supported_endpoints": [
+            "/v1/audio/transcriptions"
+        ]
+    },
     "azure/speech/azure-stt": {
         "audio_transcription_config": "azure_speech",
         "input_cost_per_second": 0.0002777778,

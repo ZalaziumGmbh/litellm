@@ -1,8 +1,9 @@
 import types
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, Final, TypedDict
 
 import httpx
+from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
@@ -37,6 +38,13 @@ class TextToSpeechRequestData(TypedDict, total=False):
 class BaseTextToSpeechConfig(ABC):
     def __init__(self):
         pass
+
+    @staticmethod
+    def resolve_voice_alias(voice: str, aliases: object) -> str:
+        if aliases is None:
+            return voice
+        validated_aliases: Final = TypeAdapter(dict[str, str]).validate_python(aliases, strict=True)
+        return validated_aliases.get(voice, voice)
 
     @classmethod
     def get_config(cls):

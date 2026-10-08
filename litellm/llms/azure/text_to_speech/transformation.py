@@ -240,11 +240,8 @@ class AzureAVATextToSpeechConfig(BaseTextToSpeechConfig):
         # If it's already an Azure voice, use it directly
         mapped_voice: str | None = None
         if isinstance(voice, str):
-            if voice in self.VOICE_MAPPINGS:
-                mapped_voice = self.VOICE_MAPPINGS[voice]
-            else:
-                # Assume it's already an Azure voice name
-                mapped_voice = voice
+            resolved_voice: Final = self.resolve_voice_alias(voice, kwargs.get("voice_mappings"))
+            mapped_voice = self.VOICE_MAPPINGS.get(resolved_voice, resolved_voice)
 
         # Map response format
         if "response_format" in optional_params:

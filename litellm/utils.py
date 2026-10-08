@@ -8289,15 +8289,17 @@ class ProviderConfigManager:
             model=model,
             provider=provider,
         )
-        if (
-            litellm.LlmProviders.AZURE == provider
-            and model_cost_entry.get("audio_transcription_config") == "azure_speech"
+        if litellm.LlmProviders.AZURE == provider and (
+            model_cost_entry.get("audio_transcription_config") == "azure_speech"
+            or model.removeprefix("azure/") == "speech/azure-stt-fast"
         ):
             from litellm.llms.azure.audio_transcription.transformation import (
                 AzureSpeechAudioTranscriptionConfig,
             )
 
-            return AzureSpeechAudioTranscriptionConfig()
+            return AzureSpeechAudioTranscriptionConfig(
+                use_fast_transcription=model.removeprefix("azure/") == "speech/azure-stt-fast"
+            )
         elif litellm.LlmProviders.DEEPGRAM == provider:
             return litellm.DeepgramAudioTranscriptionConfig()
         elif litellm.LlmProviders.ELEVENLABS == provider:

@@ -1,0 +1,64 @@
+model_list:
+  - model_name: azure-stt
+    litellm_params:
+      model: azure/speech/azure-stt-fast
+      api_base: https://westeurope.api.cognitive.microsoft.com
+      api_key: os.environ/AZURE_SPEECH_API_KEY
+    model_info:
+      mode: audio_transcription
+      input_cost_per_second: 0.0001
+      output_cost_per_second: 0.0
+
+  - model_name: azure-tts
+    litellm_params:
+      model: azure/speech/azure-tts
+      api_base: https://westeurope.tts.speech.microsoft.com
+      api_key: os.environ/AZURE_SPEECH_API_KEY
+      voice_mappings:
+        F1: de-DE-KatjaNeural
+        F2: de-DE-AmalaNeural
+        F3: de-DE-ElkeNeural
+        F4: de-DE-KlarissaNeural
+        F5: de-DE-LouisaNeural
+        M1: de-DE-ConradNeural
+        M2: de-DE-BerndNeural
+        M3: de-DE-ChristophNeural
+        M4: de-DE-KasperNeural
+        M5: de-DE-KillianNeural
+    model_info:
+      mode: audio_speech
+      input_cost_per_character: 0.000015
+
+  - model_name: google-stt
+    litellm_params:
+      model: vertex_ai/chirp_3
+      vertex_project: os.environ/GOOGLE_SPEECH_PROJECT
+      vertex_credentials: os.environ/GOOGLE_SPEECH_CREDENTIALS
+      vertex_location: eu
+      api_base: https://eu-speech.googleapis.com
+    model_info:
+      mode: audio_transcription
+      input_cost_per_second: 0.000266666667
+      output_cost_per_second: 0.0
+
+  - model_name: google-tts
+    litellm_params:
+      model: vertex_ai/chirp
+      vertex_project: os.environ/GOOGLE_SPEECH_PROJECT
+      vertex_credentials: os.environ/GOOGLE_SPEECH_CREDENTIALS
+      vertex_location: eu
+      api_base: https://eu-texttospeech.googleapis.com/v1/text:synthesize
+      voice_mappings:
+        F1: de-DE-Chirp3-HD-Kore
+        F2: de-DE-Chirp3-HD-Aoede
+        F3: de-DE-Chirp3-HD-Leda
+        F4: de-DE-Chirp3-HD-Zephyr
+        F5: de-DE-Chirp3-HD-Sulafat
+        M1: de-DE-Chirp3-HD-Charon
+        M2: de-DE-Chirp3-HD-Puck
+        M3: de-DE-Chirp3-HD-Fenrir
+        M4: de-DE-Chirp3-HD-Orus
+        M5: de-DE-Chirp3-HD-Algenib
+    model_info:
+      mode: audio_speech
+      input_cost_per_character: 0.00003

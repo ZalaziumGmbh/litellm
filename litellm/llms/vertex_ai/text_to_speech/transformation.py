@@ -228,7 +228,10 @@ class VertexAITextToSpeechConfig(BaseTextToSpeechConfig, VertexBase):
         ##########################################################
         # Map voice using helper
         ##########################################################
-        mapped_voice_str, voice_dict = self._map_voice_to_vertex_format(voice)
+        resolved_voice: Final = (
+            self.resolve_voice_alias(voice, kwargs.get("voice_mappings")) if isinstance(voice, str) else voice
+        )
+        mapped_voice_str, voice_dict = self._map_voice_to_vertex_format(resolved_voice)
         if voice_dict is not None:
             mapped_params["vertex_voice_dict"] = voice_dict
 
