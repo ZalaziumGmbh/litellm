@@ -8526,7 +8526,7 @@ def speech(
             extra_headers=headers,
             base_llm_http_handler=base_llm_http_handler,
             aspeech=aspeech or False,
-            api_base=generic_optional_params.api_base,
+            api_base=api_base or generic_optional_params.api_base,
             api_key=None,  # Vertex AI uses OAuth, not API key
             **kwargs,
         )

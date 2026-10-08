@@ -1,8 +1,16 @@
 import io
+import json
+import wave
+from email import policy
+from email.parser import BytesParser
+from pathlib import Path
+from typing import Final
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
+import respx
+from pydantic import ValidationError
 
 import litellm
 from litellm.llms.azure.audio_transcription.transformation import (
@@ -226,3 +234,86 @@ def test_azure_speech_transcription_routes_through_provider_config(monkeypatch):
     assert audio_handler.call_args.kwargs["custom_llm_provider"] == "azure"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sample_rate,language", [(8000, "de"), (24000, "de-DE")])
+async def test_fast_transcription_router_preserves_wav_and_uses_eu_multipart(
+    respx_mock: respx.MockRouter, sample_rate: int, language: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DISABLE_AIOHTTP_TRANSPORT", "True")
+    audio: Final = io.BytesIO()
+    with wave.open(audio, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(b"\x00\x00" * sample_rate)
+    audio_bytes: Final = audio.getvalue()
+    endpoint: Final = respx_mock.post(
+        "https://westeurope.api.cognitive.microsoft.com/speechtotext/transcriptions:transcribe",
+        params={"api-version": "2025-10-15"},
+    ).respond(
+        200,
+        json={
+            "combinedPhrases": [{"text": "Guten Tag."}, {"text": "Wie geht es Ihnen?"}],
+            "durationMilliseconds": 1000,
+        },
+    )
+    router: Final = litellm.Router(
+        model_list=[
+            {
+                "model_name": "azure-stt",
+                "litellm_params": {
+                    "model": "azure/speech/azure-stt-fast",
+                    "api_base": "https://westeurope.api.cognitive.microsoft.com",
+                    "api_key": "test-speech-key",
+                },
+            }
+        ],
+        num_retries=0,
+    )
+
+    response: Final = await router.atranscription(
+        model="azure-stt",
+        file=("utterance.wav", audio_bytes, "audio/wav"),
+        language=language,
+        extra_headers={"Content-Type": "application/json"},
+    )
+
+    assert response.text == "Guten Tag. Wie geht es Ihnen?"
+    assert response["duration"] == 1.0
+    assert endpoint.call_count == 1
+    request: Final = endpoint.calls[0].request
+    assert request.headers["Ocp-Apim-Subscription-Key"] == "test-speech-key"
+    assert request.headers["content-type"].startswith("multipart/form-data; boundary=")
+    multipart: Final = BytesParser(policy=policy.default).parsebytes(
+        f"Content-Type: {request.headers['content-type']}\r\n\r\n".encode() + request.content
+    )
+    parts: Final = {part.get_param("name", header="content-disposition"): part for part in multipart.iter_parts()}
+    assert json.loads(parts["definition"].get_payload(decode=True)) == {"locales": ["de-DE"]}
+    assert parts["audio"].get_payload(decode=True) == audio_bytes
+    assert parts["audio"].get_filename() == "utterance.wav"
+
+
+def test_fast_transcription_without_language_and_silent_audio() -> None:
+    config: Final = AzureSpeechAudioTranscriptionConfig(use_fast_transcription=True)
+    request: Final = config.transform_audio_transcription_request(
+        model="speech/azure-stt-fast", audio_file=b"RIFF....WAVE", optional_params={}, litellm_params={}
+    )
+    assert request.data == {"definition": "{}"}
+    response: Final = config.transform_audio_transcription_response(
+        httpx.Response(200, json={"combinedPhrases": [], "durationMilliseconds": 1250})
+    )
+    assert response.text == ""
+    assert response["duration"] == 1.25
+    with pytest.raises(ValidationError):
+        config.transform_audio_transcription_response(httpx.Response(200, json={"error": "invalid audio"}))
+
+
+@pytest.mark.parametrize(
+    "filename", ["model_prices_and_context_window.json", "litellm/model_prices_and_context_window_backup.json"]
+)
+def test_fast_transcription_pricing_is_registered(filename: str) -> None:
+    pricing: Final = json.loads((Path(__file__).parents[4] / filename).read_text())
+    entry: Final = pricing["azure/speech/azure-stt-fast"]
+    assert entry["input_cost_per_second"] == pytest.approx(0.36 / 3600)
+    assert entry["mode"] == "audio_transcription"
+    assert entry["audio_transcription_config"] == "azure_speech"

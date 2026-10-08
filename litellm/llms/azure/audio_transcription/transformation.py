@@ -2,15 +2,17 @@
 Azure AI Speech (Cognitive Services) speech-to-text transformation.
 
 Maps OpenAI-compatible audio transcription calls to Azure Speech REST
-recognition for short audio.
+short-audio recognition and Fast Transcription.
 """
 
 from typing import Any, Final
 from urllib.parse import urlencode, urlparse
 
 import httpx
+from pydantic import BaseModel, Field
+from typing_extensions import ReadOnly, TypedDict
 
-from litellm.litellm_core_utils.audio_utils.utils import process_audio_file
+from litellm.litellm_core_utils.audio_utils.utils import normalize_transcription_language_to_bcp47, process_audio_file
 from litellm.llms.base_llm.audio_transcription.transformation import (
     AudioTranscriptionRequestData,
     BaseAudioTranscriptionConfig,
@@ -28,6 +30,27 @@ class AzureSpeechAudioTranscriptionException(BaseLLMException):
     pass
 
 
+class _FastTranscriptionPhrase(BaseModel):
+    text: str
+
+
+class _FastTranscriptionResponse(BaseModel):
+    combinedPhrases: tuple[_FastTranscriptionPhrase, ...]
+    durationMilliseconds: float = Field(ge=0)
+
+
+class _FastTranscriptionDefinition(BaseModel):
+    locales: tuple[str, ...] | None = None
+
+
+class _FastTranscriptionForm(TypedDict):
+    definition: ReadOnly[str]
+
+
+class _FastTranscriptionFiles(TypedDict):
+    audio: ReadOnly[tuple[str, bytes, str]]
+
+
 class AzureSpeechAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
     """
     Configuration for Azure AI Speech (Cognitive Services) STT.
@@ -40,6 +63,10 @@ class AzureSpeechAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
     STT_SPEECH_DOMAIN = "stt.speech.microsoft.com"
     STT_ENDPOINT_PATH = "/speech/recognition/conversation/cognitiveservices/v1"
     DEFAULT_LANGUAGE = "en-US"
+
+    def __init__(self, use_fast_transcription: bool = False) -> None:
+        super().__init__()
+        self.use_fast_transcription = use_fast_transcription
 
     def get_supported_openai_params(self, model: str) -> list[OpenAIAudioTranscriptionOptionalParams]:
         return ["language", "response_format"]
@@ -76,7 +103,12 @@ class AzureSpeechAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
 
         validated_headers: Final = headers.copy()
         validated_headers["Ocp-Apim-Subscription-Key"] = api_key
-        validated_headers["Content-Type"] = validated_headers.get("Content-Type", "audio/wav")
+        if self.use_fast_transcription:
+            for key in tuple(validated_headers):
+                if key.lower() == "content-type":
+                    validated_headers.pop(key)
+        else:
+            validated_headers["Content-Type"] = validated_headers.get("Content-Type", "audio/wav")
         validated_headers["Accept"] = "application/json"
         return validated_headers
 
@@ -101,9 +133,19 @@ class AzureSpeechAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
                 status_code=400,
             )
 
+        if self.use_fast_transcription:
+            if self._is_azure_openai_endpoint(urlparse(api_base).hostname or ""):
+                raise AzureSpeechAudioTranscriptionException(
+                    message="Fast transcription requires an Azure Speech endpoint, not an Azure OpenAI endpoint.",
+                    status_code=400,
+                )
+            return f"{api_base.rstrip('/')}/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
+
         base_url: Final = self._resolve_stt_base_url(api_base=api_base)
         query_params: Final = {
-            "language": optional_params.get("language", self.DEFAULT_LANGUAGE),
+            "language": normalize_transcription_language_to_bcp47(
+                optional_params.get("language", self.DEFAULT_LANGUAGE)
+            ),
             "format": self._get_azure_response_format(optional_params.get("response_format")),
         }
         return f"{base_url}{self.STT_ENDPOINT_PATH}?{urlencode(query_params)}"
@@ -116,6 +158,21 @@ class AzureSpeechAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
         litellm_params: dict,
     ) -> AudioTranscriptionRequestData:
         processed_audio: Final = process_audio_file(audio_file)
+        if self.use_fast_transcription:
+            language: Final = optional_params.get("language")
+            definition: Final = _FastTranscriptionDefinition(
+                locales=(normalize_transcription_language_to_bcp47(language),)
+                if isinstance(language, str) and language
+                else None
+            )
+            form: Final[_FastTranscriptionForm] = {"definition": definition.model_dump_json(exclude_none=True)}
+            files: Final[_FastTranscriptionFiles] = {
+                "audio": (processed_audio.filename, processed_audio.file_content, processed_audio.content_type)
+            }
+            return AudioTranscriptionRequestData(
+                data=form,
+                files=files,
+            )
         return AudioTranscriptionRequestData(
             data=processed_audio.file_content,
             files=None,
@@ -127,6 +184,15 @@ class AzureSpeechAudioTranscriptionConfig(BaseAudioTranscriptionConfig):
         raw_response: httpx.Response,
     ) -> TranscriptionResponse:
         response_json: Final = raw_response.json()
+        if self.use_fast_transcription:
+            parsed: Final = _FastTranscriptionResponse.model_validate(response_json)
+            fast_response: Final = TranscriptionResponse(
+                text=" ".join(phrase.text for phrase in parsed.combinedPhrases)
+            )
+            fast_response["duration"] = parsed.durationMilliseconds / 1000
+            fast_response["task"] = "transcribe"
+            fast_response._hidden_params = response_json
+            return fast_response
         recognition_status: Final = response_json.get("RecognitionStatus")
         if recognition_status is not None and recognition_status != "Success":
             raise AzureSpeechAudioTranscriptionException(
