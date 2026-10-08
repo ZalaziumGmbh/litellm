@@ -35,9 +35,9 @@ class AzureOpenAIGPT5Config(AzureOpenAIConfig, OpenAIGPT5Config):
 
     @classmethod
     def is_model_gpt_5_model(cls, model: str) -> bool:
-        """Check if the Azure model string refers to a gpt-5 variant.
+        """Check if the Azure model string refers to a GPT-5 or GPT-6 variant.
 
-        Accepts both explicit gpt-5 model names and the ``gpt5_series/`` prefix
+        Accepts explicit GPT-5/GPT-6 model names and the ``gpt5_series/`` prefix
         used for manual routing.
         """
         # The gpt-5-chat* family (gpt-5-chat, gpt-5-chat-latest, gpt-5-chat-2025-08-07,
@@ -54,7 +54,9 @@ class AzureOpenAIGPT5Config(AzureOpenAIConfig, OpenAIGPT5Config):
         # than a substring check) makes this boundary explicit and avoids any ambiguity
         # if future model names coincidentally contain "gpt-5-chat" as an interior run.
         _normalized: Final = model.split("/")[-1]  # strip provider prefix, e.g. "azure/"
-        return ("gpt-5" in model and not _normalized.startswith("gpt-5-chat")) or "gpt5_series" in model
+        is_gpt_reasoning_model: Final = "gpt-5" in model or "gpt-6" in model
+        is_regular_chat_model: Final = _normalized.startswith(("gpt-5-chat", "gpt-6-chat"))
+        return (is_gpt_reasoning_model and not is_regular_chat_model) or "gpt5_series" in model
 
     def get_supported_openai_params(self, model: str) -> list[str]:
         """Get supported parameters for Azure OpenAI GPT-5 models.

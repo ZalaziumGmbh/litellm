@@ -181,6 +181,10 @@ class TestBackwardCompatibility:
         config = ProviderConfigManager._get_azure_config(model="gpt-5.2")
         assert isinstance(config, AzureOpenAIGPT5Config)
 
+    def test_should_detect_gpt6_from_model_name(self):
+        config = ProviderConfigManager._get_azure_config(model="gpt-6.1-sol")
+        assert isinstance(config, AzureOpenAIGPT5Config)
+
     def test_should_detect_gpt5_from_gpt5_series_prefix(self):
         config = ProviderConfigManager._get_azure_config(
             model="gpt5_series/my-deployment"
@@ -269,6 +273,15 @@ class TestBaseModelFlowsIntoConfigInternals:
             custom_llm_provider="azure",
             max_tokens=200,
             base_model="azure/gpt-5.2",
+        )
+        assert params.get("max_completion_tokens") == 200
+        assert "max_tokens" not in params
+
+    def test_should_map_max_tokens_for_azure_gpt6_model(self):
+        params = get_optional_params(
+            model="gpt-6.1-sol",
+            custom_llm_provider="azure",
+            max_tokens=200,
         )
         assert params.get("max_completion_tokens") == 200
         assert "max_tokens" not in params
