@@ -1,37 +1,87 @@
-# cicd
 name: deploy-zalazium-dev
 on:
   push:
-    branches:
-      - zalazium-dev
+    branches: [zalazium-dev]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: one-image-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
-      - name: Checkout master
-        uses: actions/checkout@v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v2
+      - uses: actions/checkout@v4
         with:
-          username: ${{ secrets.DOCKER_USER }}
-          password: ${{ secrets.DOCKER_TOKEN }}
-
-      # BuildKit resolves base images without the docker login credentials
-      # (docker/login-action#862), so Hub pulls land in the anonymous quota
-      # that GitHub's shared runner IPs keep exhausted. The mirror serves the
-      # same digests, so the pins in the Dockerfile still hold.
-      - name: Build container image
+          persist-credentials: false
+      - name: Prepare isolated rootless builder
+        shell: bash
         run: |
-          syntax=$(sed -n 's|^# syntax=||p' Dockerfile | head -1)
-          ui=$(sed -n 's|^ARG UI_BUILD_IMAGE=||p' Dockerfile | head -1)
-          : "${syntax:?no '# syntax=' line in Dockerfile}"
-          : "${ui:?no 'ARG UI_BUILD_IMAGE=' line in Dockerfile}"
-          case "$ui" in */*) ;; *) ui="library/$ui" ;; esac
-          docker build \
-            --build-arg "BUILDKIT_SYNTAX=mirror.gcr.io/$syntax" \
-            --build-arg "UI_BUILD_IMAGE=mirror.gcr.io/$ui" \
-            -t "${{ secrets.DOCKER_USER }}/litellm:dev" .
-
-      - name: Push image to Docker Hub
-        run: docker push ${{ secrets.DOCKER_USER }}/litellm:dev
+          set -euo pipefail
+          sudo install -m 0755 -d /etc/apt/keyrings
+          sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+          sudo chmod a+r /etc/apt/keyrings/docker.asc
+          . /etc/os-release
+          printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu %s stable\n' \
+            "$(dpkg --print-architecture)" "$VERSION_CODENAME" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y uidmap dbus-user-session docker-ce-rootless-extras skopeo acl
+          sudo useradd --create-home tester
+          test_uid=$(id -u tester)
+          sudo loginctl enable-linger tester
+          sudo systemctl start "user@${test_uid}.service"
+          sudo install -d -m 700 -o tester -g tester /home/tester/.config/systemd/user/docker.service.d
+          printf '[Service]\nExecStart=\nExecStart=/usr/bin/env -i HOME=/home/tester USER=tester LOGNAME=tester PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin XDG_CONFIG_HOME=/home/tester/.config XDG_DATA_HOME=/home/tester/.local/share XDG_RUNTIME_DIR=/run/user/%s DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus NOTIFY_SOCKET=${NOTIFY_SOCKET} /usr/bin/dockerd-rootless.sh\n' \
+            "$test_uid" "$test_uid" | sudo tee /home/tester/.config/systemd/user/docker.service.d/runtime.conf >/dev/null
+          sudo chown -R tester:tester /home/tester/.config
+          sudo mkdir -p /home/tester/app/ci
+          sudo rsync -rl ci/ /home/tester/app/ci/
+          sudo chown -R tester:tester /home/tester/app
+          # Remove inherited ACLs before rootless namespace mappings are created.
+          sudo setfacl -Rb /home/tester
+          sudo setfacl -Rk /home/tester
+          sudo runuser -u tester -- env -i HOME=/home/tester PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+            XDG_RUNTIME_DIR="/run/user/${test_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${test_uid}/bus" \
+            dockerd-rootless-setuptool.sh install --force || {
+              sudo journalctl --no-pager -n 60 "_UID=${test_uid}" "_SYSTEMD_USER_UNIT=docker.service"
+              exit 1
+            }
+          sudo runuser -u tester -- env -i HOME=/home/tester PATH=/usr/local/bin:/usr/bin:/bin \
+            XDG_RUNTIME_DIR="/run/user/${test_uid}" DOCKER_HOST="unix:///run/user/${test_uid}/docker.sock" \
+            docker info --format '{{json .SecurityOptions}}' | grep -q rootless
+      - name: Qualify the pinned official image without registry credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_uid=$(id -u tester)
+          official=$(cat .github/one-official-image.txt)
+          sudo runuser -u tester -- env -i HOME=/home/tester PATH=/usr/local/bin:/usr/bin:/bin \
+            XDG_RUNTIME_DIR="/run/user/${test_uid}" DOCKER_HOST="unix:///run/user/${test_uid}/docker.sock" \
+            OFFICIAL_IMAGE="$official" sh -c '
+              set -eu
+              docker pull "$OFFICIAL_IMAGE"
+              docker pull postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+              cd /home/tester/app
+              python3 ci/qualify_litellm.py "$OFFICIAL_IMAGE"
+            '
+      - name: Mirror the tested official bytes to an immutable candidate
+        env:
+          REGISTRY_USER: ${{ secrets.DOCKER_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.DOCKER_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo install -d -m 700 -o tester -g tester /dev/shm/zalazium /dev/shm/zalazium/registry
+          clean_skopeo() {
+            sudo runuser -u tester -- env -i HOME=/home/tester PATH=/usr/local/bin:/usr/bin:/bin skopeo "$@"
+          }
+          trap 'sudo rm -rf /dev/shm/zalazium/registry' EXIT
+          printf '%s' "$REGISTRY_PASSWORD" | clean_skopeo login \
+            --authfile /dev/shm/zalazium/registry/auth.json --username "$REGISTRY_USER" --password-stdin docker.io
+          official=$(cat .github/one-official-image.txt)
+          clean_skopeo copy --all --preserve-digests --retry-times 3 --src-no-creds \
+            --dest-authfile /dev/shm/zalazium/registry/auth.json \
+            "docker://$official" "docker://zalaziumcode/litellm:one-$GITHUB_SHA"
+          # No moving tags here. Promotion requires the exact recovery-qualified record.
