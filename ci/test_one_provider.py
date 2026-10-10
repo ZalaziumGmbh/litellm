@@ -66,6 +66,24 @@ class ProviderTests(unittest.TestCase):
             self.assertAlmostEqual(cost, price * 1000, places=10)
 
 
+    def test_router_character_prices_override_shared_provider_rates(self):
+        router = litellm.Router(model_list=[{
+            'model_name': 'synthetic-neural2',
+            'litellm_params': {'model': 'vertex_ai/neural2'},
+            'model_info': {'mode': 'audio_speech', 'input_cost_per_character': 0.000016,
+                           'output_cost_per_character': 0.0}}, {
+            'model_name': 'synthetic-free-tts',
+            'litellm_params': {'model': 'openai/supertonic-3', 'api_key': 'synthetic'},
+            'model_info': {'mode': 'audio_speech', 'input_cost_per_character': 0.0,
+                           'output_cost_per_character': 0.0}}])
+        for row, expected in zip(router.model_list, (0.016, 0.0)):
+            cost = litellm.completion_cost(model=row['litellm_params']['model'],
+                custom_llm_provider=row['litellm_params']['model'].split('/')[0],
+                router_model_id=row['model_info']['id'], custom_pricing=True,
+                call_type='speech', prompt='x' * 1000)
+            self.assertAlmostEqual(cost, expected, places=10)
+
+
 if __name__ == '__main__':
     if os.getuid() == 0:
         raise RuntimeError('Run as tester')

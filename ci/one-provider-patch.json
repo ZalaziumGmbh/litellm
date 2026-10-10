@@ -96,5 +96,25 @@
         "after": "                return supported_regions[0]\n            # If user specified a region not supported by this model, override it\n            if vertex_region not in supported_regions:\n                raise ValueError(\n                    \"Explicit Vertex AI processing region is unsupported; cross-region fallback refused\"\n                )\n            return vertex_region\n        return vertex_region or \"us-central1\"\n\n"
       }
     ]
+  },
+  "cost_calculator.py": {
+    "before_sha256": "2c28e3fab1a9a79035bd7384972041625dfa7a6cf9fe217368d2c4f9a4db4f5c",
+    "after_sha256": "360cb0af245ed50a86fd67785cff55bf7a6804cb3cccfa8051148c6bf4af18ed",
+    "edits": [
+      {
+        "before": "_NON_TOKEN_RATE_FIELDS: Final = frozenset({\"input_cost_per_second\", \"input_cost_per_query\", \"tiered_pricing\"})",
+        "after": "_NON_TOKEN_RATE_FIELDS: Final = frozenset({\"input_cost_per_second\", \"input_cost_per_query\", \"tiered_pricing\",\n    \"input_cost_per_character\", \"output_cost_per_character\"})"
+      }
+    ]
+  },
+  "litellm_core_utils/llm_cost_calc/utils.py": {
+    "before_sha256": "324bf9ae8de1f2b7deff677deab1d07ce4037b00b45156dcbf92b7b83d802c4a",
+    "after_sha256": "911f25d73c4820060e37390a2b1a1ca3cf4717ae5bdf53d10950e061ab99be56",
+    "edits": [
+      {
+        "before": "    if model_info.get(\"input_cost_per_character\"):\n        return \"cost_per_character\"\n    elif model_info.get(\"input_cost_per_token\"):",
+        "after": "    if model_info.get(\"input_cost_per_character\") is not None:\n        return \"cost_per_character\"\n    elif model_info.get(\"input_cost_per_token\") is not None:"
+      }
+    ]
   }
 }
