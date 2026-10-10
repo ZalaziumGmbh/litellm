@@ -18,16 +18,21 @@ import urllib.request
 def main(image):
     if os.getuid() == 0:
         raise RuntimeError('Run as tester')
+    sensitive = []
     def docker(*args):
         result = subprocess.run(['docker', *args], capture_output=True, timeout=300)
         if result.returncode:
-            raise RuntimeError('Synthetic container operation failed')
+            error = result.stderr.decode(errors='replace')
+            for value in sensitive:
+                error = error.replace(value, '<synthetic-credential>')
+            raise RuntimeError('Synthetic Docker ' + args[0] + ' failed: ' + error[-900:])
         return result.stdout.decode().strip()
     if 'rootless' not in docker('info', '--format', '{{json .SecurityOptions}}'):
         raise RuntimeError('Rootless Docker required')
     name = 'one-litellm-' + secrets.token_hex(4)
     master = 'sk-' + secrets.token_urlsafe(32)
     password = 'Synthetic-Only-' + secrets.token_urlsafe(24)
+    sensitive.extend((master, password))
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
     with tempfile.TemporaryDirectory(prefix='one-litellm-') as temporary:

@@ -27,7 +27,7 @@ jobs:
           printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu %s stable\n' \
             "$(dpkg --print-architecture)" "$VERSION_CODENAME" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y uidmap dbus-user-session docker-ce-rootless-extras skopeo
+          sudo apt-get install -y uidmap dbus-user-session docker-ce-rootless-extras skopeo acl
           sudo useradd --create-home tester
           test_uid=$(id -u tester)
           sudo loginctl enable-linger tester
@@ -39,6 +39,9 @@ jobs:
           sudo mkdir -p /home/tester/app/ci
           sudo rsync -rl ci/ /home/tester/app/ci/
           sudo chown -R tester:tester /home/tester/app
+          # Remove inherited ACLs before rootless namespace mappings are created.
+          sudo setfacl -Rb /home/tester
+          sudo setfacl -Rk /home/tester
           sudo runuser -u tester -- env -i HOME=/home/tester PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \
             XDG_RUNTIME_DIR="/run/user/${test_uid}" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${test_uid}/bus" \
             dockerd-rootless-setuptool.sh install --force || {
