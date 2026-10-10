@@ -26,7 +26,7 @@ def main(image):
             for value in sensitive:
                 error = error.replace(value, '<synthetic-credential>')
             raise RuntimeError('Synthetic Docker ' + args[0] + ' failed: ' + error[-900:])
-        return result.stdout.decode().strip()
+        return (result.stdout + (result.stderr if args[0] == 'logs' else b'')).decode().strip()
     if 'rootless' not in docker('info', '--format', '{{json .SecurityOptions}}'):
         raise RuntimeError('Rootless Docker required')
     name = 'one-litellm-' + secrets.token_hex(4)
@@ -57,7 +57,16 @@ def main(image):
                 try:
                     if request('/health/liveliness')[0] == 200: return
                 except OSError: pass
+                state = json.loads(docker('inspect', '--format', '{{json .State}}', name+'-app'))
+                if not state['Running']:
+                    break
                 time.sleep(1)
+            state = json.loads(docker('inspect', '--format', '{{json .State}}', name+'-app'))
+            logs = docker('logs', '--tail', '40', name+'-app')
+            for value in sensitive:
+                logs = logs.replace(value, '<synthetic-credential>')
+            print(json.dumps({'running':state['Running'],'exit':state['ExitCode'],'oom':state['OOMKilled']}))
+            print(logs[-5000:])
             raise RuntimeError('Official proxy readiness deadline exceeded')
         docker('network', 'create', '--internal', name)
         try:
