@@ -1,0 +1,8 @@
+ARG OFFICIAL_IMAGE
+FROM ${OFFICIAL_IMAGE}
+ARG REVISION
+ARG OFFICIAL_IMAGE
+LABEL org.opencontainers.image.revision=${REVISION}
+LABEL de.zalazium.one.upstream=${OFFICIAL_IMAGE}
+COPY apply_one_provider_patch.py one-provider-patch.json /tmp/one-provider/
+RUN python /tmp/one-provider/apply_one_provider_patch.py && rm -r /tmp/one-provider

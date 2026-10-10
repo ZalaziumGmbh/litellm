@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Promote an exact, previously built and recovery-qualified DEV image."""
 import json
-import base64
 import os
 from pathlib import Path
 import re
@@ -49,14 +48,6 @@ def main():
     with urllib.request.urlopen(req, timeout=30) as response:
         run = json.load(response)
     target = validate(record, run, repository)
-    if repository == 'ZalaziumGmbh/litellm':
-        request = urllib.request.Request('https://api.github.com/repos/' + repository
-            + '/contents/.github/one-official-image.txt?ref=' + record['revision'],
-            headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN']})
-        with urllib.request.urlopen(request, timeout=30) as response:
-            official = base64.b64decode(json.load(response)['content']).decode().strip()
-        if official != 'docker.litellm.ai/berriai/litellm@' + record['digest']:
-            raise ValueError('Official image differs from the exact CI-tested upstream digest')
     if sys.argv[1:] == ['--verify']:
         print('Reviewed immutable release and successful build verified')
         return
@@ -98,9 +89,9 @@ def main():
 
 
 def image_repo_requires_revision(repository):
-    # The official LiteLLM image is mirrored byte-for-byte, never relabelled or
-    # rebuilt from the old fork. Its CI commit pins the exact upstream digest.
-    return repository != 'ZalaziumGmbh/litellm'
+    # Every candidate now records its reviewed source revision. LiteLLM keeps
+    # the pinned official base and adds only the exact provider patch.
+    return True
 
 
 if __name__ == '__main__':

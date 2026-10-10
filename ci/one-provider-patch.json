@@ -1,0 +1,100 @@
+{
+  "llms/azure/audio_transcription/transformation.py": {
+    "before_sha256": "db9078662292e3a72cce2aeb5f58d541288dbd726a70e333c315618059dee07b",
+    "after_sha256": "bea93adf856bc3b94cbd7d10f11ba166e9e59b5d144e661631f9d5ee623e1f52",
+    "edits": [
+      {
+        "before": "Azure AI Speech (Cognitive Services) speech-to-text transformation.\n\nMaps OpenAI-compatible audio transcription calls to Azure Speech REST\nrecognition for short audio.\n\"\"\"\n\nfrom typing import Any, Final\nfrom urllib.parse import urlencode, urlparse\n\nimport httpx\n\nfrom litellm.litellm_core_utils.audio_utils.utils import process_audio_file\nfrom litellm.llms.base_llm.audio_transcription.transformation import (\n    AudioTranscriptionRequestData,\n    BaseAudioTranscriptionConfig,\n",
+        "after": "Azure AI Speech (Cognitive Services) speech-to-text transformation.\n\nMaps OpenAI-compatible audio transcription calls to Azure Speech REST\nshort-audio recognition and Fast Transcription.\n\"\"\"\n\nfrom typing import Any, Final\nfrom urllib.parse import urlencode, urlparse\n\nimport httpx\nfrom pydantic import BaseModel, Field\nfrom typing_extensions import ReadOnly, TypedDict\n\nfrom litellm.litellm_core_utils.audio_utils.utils import normalize_transcription_language_to_bcp47, process_audio_file\nfrom litellm.llms.base_llm.audio_transcription.transformation import (\n    AudioTranscriptionRequestData,\n    BaseAudioTranscriptionConfig,\n"
+      },
+      {
+        "before": "    pass\n\n\nclass AzureSpeechAudioTranscriptionConfig(BaseAudioTranscriptionConfig):\n    \"\"\"\n    Configuration for Azure AI Speech (Cognitive Services) STT.\n",
+        "after": "    pass\n\n\nclass _FastTranscriptionPhrase(BaseModel):\n    text: str\n\n\nclass _FastTranscriptionResponse(BaseModel):\n    combinedPhrases: tuple[_FastTranscriptionPhrase, ...]\n    durationMilliseconds: float = Field(ge=0)\n\n\nclass _FastTranscriptionDefinition(BaseModel):\n    locales: tuple[str, ...] | None = None\n\n\nclass _FastTranscriptionForm(TypedDict):\n    definition: ReadOnly[str]\n\n\nclass _FastTranscriptionFiles(TypedDict):\n    audio: ReadOnly[tuple[str, bytes, str]]\n\n\nclass AzureSpeechAudioTranscriptionConfig(BaseAudioTranscriptionConfig):\n    \"\"\"\n    Configuration for Azure AI Speech (Cognitive Services) STT.\n"
+      },
+      {
+        "before": "    STT_SPEECH_DOMAIN = \"stt.speech.microsoft.com\"\n    STT_ENDPOINT_PATH = \"/speech/recognition/conversation/cognitiveservices/v1\"\n    DEFAULT_LANGUAGE = \"en-US\"\n\n    def get_supported_openai_params(self, model: str) -> list[OpenAIAudioTranscriptionOptionalParams]:\n        return [\"language\", \"response_format\"]\n",
+        "after": "    STT_SPEECH_DOMAIN = \"stt.speech.microsoft.com\"\n    STT_ENDPOINT_PATH = \"/speech/recognition/conversation/cognitiveservices/v1\"\n    DEFAULT_LANGUAGE = \"en-US\"\n\n    def __init__(self, use_fast_transcription: bool = False) -> None:\n        super().__init__()\n        self.use_fast_transcription = use_fast_transcription\n\n    def get_supported_openai_params(self, model: str) -> list[OpenAIAudioTranscriptionOptionalParams]:\n        return [\"language\", \"response_format\"]\n"
+      },
+      {
+        "before": "\n        validated_headers: Final = headers.copy()\n        validated_headers[\"Ocp-Apim-Subscription-Key\"] = api_key\n        validated_headers[\"Content-Type\"] = validated_headers.get(\"Content-Type\", \"audio/wav\")\n        validated_headers[\"Accept\"] = \"application/json\"\n        return validated_headers\n\n",
+        "after": "\n        validated_headers: Final = headers.copy()\n        validated_headers[\"Ocp-Apim-Subscription-Key\"] = api_key\n        if self.use_fast_transcription:\n            for key in tuple(validated_headers):\n                if key.lower() == \"content-type\":\n                    validated_headers.pop(key)\n        else:\n            validated_headers[\"Content-Type\"] = validated_headers.get(\"Content-Type\", \"audio/wav\")\n        validated_headers[\"Accept\"] = \"application/json\"\n        return validated_headers\n\n"
+      },
+      {
+        "before": "                status_code=400,\n            )\n\n        base_url: Final = self._resolve_stt_base_url(api_base=api_base)\n        query_params: Final = {\n            \"language\": optional_params.get(\"language\", self.DEFAULT_LANGUAGE),\n            \"format\": self._get_azure_response_format(optional_params.get(\"response_format\")),\n        }\n        return f\"{base_url}{self.STT_ENDPOINT_PATH}?{urlencode(query_params)}\"\n",
+        "after": "                status_code=400,\n            )\n\n        if self.use_fast_transcription:\n            if self._is_azure_openai_endpoint(urlparse(api_base).hostname or \"\"):\n                raise AzureSpeechAudioTranscriptionException(\n                    message=\"Fast transcription requires an Azure Speech endpoint, not an Azure OpenAI endpoint.\",\n                    status_code=400,\n                )\n            return f\"{api_base.rstrip('/')}/speechtotext/transcriptions:transcribe?api-version=2025-10-15\"\n\n        base_url: Final = self._resolve_stt_base_url(api_base=api_base)\n        query_params: Final = {\n            \"language\": normalize_transcription_language_to_bcp47(\n                optional_params.get(\"language\", self.DEFAULT_LANGUAGE)\n            ),\n            \"format\": self._get_azure_response_format(optional_params.get(\"response_format\")),\n        }\n        return f\"{base_url}{self.STT_ENDPOINT_PATH}?{urlencode(query_params)}\"\n"
+      },
+      {
+        "before": "        litellm_params: dict,\n    ) -> AudioTranscriptionRequestData:\n        processed_audio: Final = process_audio_file(audio_file)\n        return AudioTranscriptionRequestData(\n            data=processed_audio.file_content,\n            files=None,\n",
+        "after": "        litellm_params: dict,\n    ) -> AudioTranscriptionRequestData:\n        processed_audio: Final = process_audio_file(audio_file)\n        if self.use_fast_transcription:\n            language: Final = optional_params.get(\"language\")\n            definition: Final = _FastTranscriptionDefinition(\n                locales=(normalize_transcription_language_to_bcp47(language),)\n                if isinstance(language, str) and language\n                else None\n            )\n            form: Final[_FastTranscriptionForm] = {\"definition\": definition.model_dump_json(exclude_none=True)}\n            files: Final[_FastTranscriptionFiles] = {\n                \"audio\": (processed_audio.filename, processed_audio.file_content, processed_audio.content_type)\n            }\n            return AudioTranscriptionRequestData(\n                data=form,\n                files=files,\n            )\n        return AudioTranscriptionRequestData(\n            data=processed_audio.file_content,\n            files=None,\n"
+      },
+      {
+        "before": "        raw_response: httpx.Response,\n    ) -> TranscriptionResponse:\n        response_json: Final = raw_response.json()\n        recognition_status: Final = response_json.get(\"RecognitionStatus\")\n        if recognition_status is not None and recognition_status != \"Success\":\n            raise AzureSpeechAudioTranscriptionException(\n",
+        "after": "        raw_response: httpx.Response,\n    ) -> TranscriptionResponse:\n        response_json: Final = raw_response.json()\n        if self.use_fast_transcription:\n            parsed: Final = _FastTranscriptionResponse.model_validate(response_json)\n            fast_response: Final = TranscriptionResponse(\n                text=\" \".join(phrase.text for phrase in parsed.combinedPhrases)\n            )\n            fast_response[\"duration\"] = parsed.durationMilliseconds / 1000\n            fast_response[\"task\"] = \"transcribe\"\n            fast_response._hidden_params = response_json\n            return fast_response\n        recognition_status: Final = response_json.get(\"RecognitionStatus\")\n        if recognition_status is not None and recognition_status != \"Success\":\n            raise AzureSpeechAudioTranscriptionException(\n"
+      }
+    ]
+  },
+  "llms/azure/text_to_speech/transformation.py": {
+    "before_sha256": "92c9f0e24099c7e76a8c01eddb811a2a46481005881ca491ef5960b26a92680e",
+    "after_sha256": "47ed11af7f0c03dcd301ae385abd9724cdc009c3c1dde1dcdb5104cabe65c507",
+    "edits": [
+      {
+        "before": "        # If it's already an Azure voice, use it directly\n        mapped_voice: str | None = None\n        if isinstance(voice, str):\n            if voice in self.VOICE_MAPPINGS:\n                mapped_voice = self.VOICE_MAPPINGS[voice]\n            else:\n                # Assume it's already an Azure voice name\n                mapped_voice = voice\n\n        # Map response format\n        if \"response_format\" in optional_params:\n",
+        "after": "        # If it's already an Azure voice, use it directly\n        mapped_voice: str | None = None\n        if isinstance(voice, str):\n            resolved_voice: Final = self.resolve_voice_alias(voice, kwargs.get(\"voice_mappings\"))\n            mapped_voice = self.VOICE_MAPPINGS.get(resolved_voice, resolved_voice)\n\n        # Map response format\n        if \"response_format\" in optional_params:\n"
+      }
+    ]
+  },
+  "llms/base_llm/text_to_speech/transformation.py": {
+    "before_sha256": "c369907af1ef0ab3d7fed2d5c5ef2ba8ff17a519211a364a47dde5dd25f91e6e",
+    "after_sha256": "d053e6fe9070bfd1990e38dce25247de36d0945045ac0f5e9d2094fd061e1a7f",
+    "edits": [
+      {
+        "before": "import types\nfrom abc import ABC, abstractmethod\nfrom typing import TYPE_CHECKING, Any, TypedDict\n\nimport httpx\n\nif TYPE_CHECKING:\n    from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj\n",
+        "after": "import types\nfrom abc import ABC, abstractmethod\nfrom typing import TYPE_CHECKING, Any, Final, TypedDict\n\nimport httpx\nfrom pydantic import TypeAdapter\n\nif TYPE_CHECKING:\n    from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj\n"
+      },
+      {
+        "before": "class BaseTextToSpeechConfig(ABC):\n    def __init__(self):\n        pass\n\n    @classmethod\n    def get_config(cls):\n",
+        "after": "class BaseTextToSpeechConfig(ABC):\n    def __init__(self):\n        pass\n\n    @staticmethod\n    def resolve_voice_alias(voice: str, aliases: object) -> str:\n        if aliases is None:\n            return voice\n        validated_aliases: Final = TypeAdapter(dict[str, str]).validate_python(aliases, strict=True)\n        return validated_aliases.get(voice, voice)\n\n    @classmethod\n    def get_config(cls):\n"
+      }
+    ]
+  },
+  "llms/vertex_ai/text_to_speech/transformation.py": {
+    "before_sha256": "ab375aa8263d2175323603d60bb80994be03e1a468fcbe1fe25a00cb93a68fbc",
+    "after_sha256": "84596de7e9f28699b0e4d38c369df65a754e5545a54724769580f98ec818180e",
+    "edits": [
+      {
+        "before": "        ##########################################################\n        # Map voice using helper\n        ##########################################################\n        mapped_voice_str, voice_dict = self._map_voice_to_vertex_format(voice)\n        if voice_dict is not None:\n            mapped_params[\"vertex_voice_dict\"] = voice_dict\n\n",
+        "after": "        ##########################################################\n        # Map voice using helper\n        ##########################################################\n        resolved_voice: Final = (\n            self.resolve_voice_alias(voice, kwargs.get(\"voice_mappings\")) if isinstance(voice, str) else voice\n        )\n        mapped_voice_str, voice_dict = self._map_voice_to_vertex_format(resolved_voice)\n        if voice_dict is not None:\n            mapped_params[\"vertex_voice_dict\"] = voice_dict\n\n"
+      }
+    ]
+  },
+  "main.py": {
+    "before_sha256": "27241387ba3159a2157c1888dc022faad3d00650e1dde1d71ad448184c6813ce",
+    "after_sha256": "be369e9b2e47d3665207336545a191b23708085799a1202fb61712f6f341d849",
+    "edits": [
+      {
+        "before": "            extra_headers=headers,\n            base_llm_http_handler=base_llm_http_handler,\n            aspeech=aspeech or False,\n            api_base=generic_optional_params.api_base,\n            api_key=None,  # Vertex AI uses OAuth, not API key\n            **kwargs,\n        )\n",
+        "after": "            extra_headers=headers,\n            base_llm_http_handler=base_llm_http_handler,\n            aspeech=aspeech or False,\n            api_base=api_base or generic_optional_params.api_base,\n            api_key=None,  # Vertex AI uses OAuth, not API key\n            **kwargs,\n        )\n"
+      }
+    ]
+  },
+  "utils.py": {
+    "before_sha256": "39eb230b9ebd95a82e2dc6f522ebc5dc407a9b1b51e688807b9264d631c04be6",
+    "after_sha256": "c16d689d3e690bfb20b8abdece2d88c864341c769efed6bfbeb05607ef87ae8c",
+    "edits": [
+      {
+        "before": "            model=model,\n            provider=provider,\n        )\n        if (\n            litellm.LlmProviders.AZURE == provider\n            and model_cost_entry.get(\"audio_transcription_config\") == \"azure_speech\"\n        ):\n            from litellm.llms.azure.audio_transcription.transformation import (\n                AzureSpeechAudioTranscriptionConfig,\n            )\n\n            return AzureSpeechAudioTranscriptionConfig()\n        elif litellm.LlmProviders.DEEPGRAM == provider:\n            return litellm.DeepgramAudioTranscriptionConfig()\n        elif litellm.LlmProviders.ELEVENLABS == provider:\n",
+        "after": "            model=model,\n            provider=provider,\n        )\n        if litellm.LlmProviders.AZURE == provider and (\n            model_cost_entry.get(\"audio_transcription_config\") == \"azure_speech\"\n            or model.removeprefix(\"azure/\") == \"speech/azure-stt-fast\"\n        ):\n            from litellm.llms.azure.audio_transcription.transformation import (\n                AzureSpeechAudioTranscriptionConfig,\n            )\n\n            return AzureSpeechAudioTranscriptionConfig(\n                use_fast_transcription=model.removeprefix(\"azure/\") == \"speech/azure-stt-fast\"\n            )\n        elif litellm.LlmProviders.DEEPGRAM == provider:\n            return litellm.DeepgramAudioTranscriptionConfig()\n        elif litellm.LlmProviders.ELEVENLABS == provider:\n"
+      }
+    ]
+  },
+  "llms/vertex_ai/vertex_llm_base.py": {
+    "before_sha256": "7ed5373bd7c389594451958efe34256ce588a3de22aa02cb6d2bef21bfd712ce",
+    "after_sha256": "5038b6e0242d1c7d59bbd8f26f1613c632c5f830bba0564d0a5ffb1327271700",
+    "edits": [
+      {
+        "before": "                return supported_regions[0]\n            # If user specified a region not supported by this model, override it\n            if vertex_region not in supported_regions:\n                verbose_logger.warning(\n                    \"Vertex AI model '%s' does not support region '%s' (supported: %s). Routing to '%s'.\",\n                    model,\n                    vertex_region,\n                    supported_regions,\n                    supported_regions[0],\n                )\n                return supported_regions[0]\n            return vertex_region\n        return vertex_region or \"us-central1\"\n\n",
+        "after": "                return supported_regions[0]\n            # If user specified a region not supported by this model, override it\n            if vertex_region not in supported_regions:\n                raise ValueError(\n                    \"Explicit Vertex AI processing region is unsupported; cross-region fallback refused\"\n                )\n            return vertex_region\n        return vertex_region or \"us-central1\"\n\n"
+      }
+    ]
+  }
+}
