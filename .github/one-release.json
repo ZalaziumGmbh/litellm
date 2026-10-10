@@ -1,0 +1,15 @@
+{
+  "revision": "1276909d1d306f904023aad8d9193ba3a079ca0c",
+  "run_id": 38012888681,
+  "digest": "sha256:3d88bd757134a00e8c00237b85a021ab1f6d54abb9c1df750f411dbe7256a500",
+  "previous_digest": null,
+  "backup_id": "9229eac4de48a44ad3ec841c7e036f95843be7146cc69bdda01bf2043076785e",
+  "checks": [
+    "admin",
+    "workflow",
+    "persistence",
+    "isolated-restore",
+    "schema-rollback"
+  ],
+  "evidence": "https://github.com/ZalaziumGmbh/mastermind/pull/4"
+}
