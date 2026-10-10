@@ -99,11 +99,15 @@
   },
   "cost_calculator.py": {
     "before_sha256": "2c28e3fab1a9a79035bd7384972041625dfa7a6cf9fe217368d2c4f9a4db4f5c",
-    "after_sha256": "360cb0af245ed50a86fd67785cff55bf7a6804cb3cccfa8051148c6bf4af18ed",
+    "after_sha256": "0f4f473b6abdb207ef06df9a88ad6b129225e22b145da65dfc5474dcc051203a",
     "edits": [
       {
         "before": "_NON_TOKEN_RATE_FIELDS: Final = frozenset({\"input_cost_per_second\", \"input_cost_per_query\", \"tiered_pricing\"})",
         "after": "_NON_TOKEN_RATE_FIELDS: Final = frozenset({\"input_cost_per_second\", \"input_cost_per_query\", \"tiered_pricing\",\n    \"input_cost_per_character\", \"output_cost_per_character\"})"
+      },
+      {
+        "before": "                elif call_type in _SPEECH_CALL_TYPES:\n                    prompt_characters = litellm.utils._count_characters(text=prompt)",
+        "after": "                elif call_type in _SPEECH_CALL_TYPES:\n                    # Speech suppliers bill whitespace as well as visible characters.\n                    prompt_characters = len(prompt)"
       }
     ]
   },
