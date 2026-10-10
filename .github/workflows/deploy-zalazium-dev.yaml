@@ -81,7 +81,7 @@ jobs:
           printf '%s' "$REGISTRY_PASSWORD" | clean_skopeo login \
             --authfile /dev/shm/zalazium/registry/auth.json --username "$REGISTRY_USER" --password-stdin docker.io
           official=$(cat .github/one-official-image.txt)
-          clean_skopeo copy --all --preserve-digests --retry-times 3 \
+          clean_skopeo copy --all --preserve-digests --retry-times 3 --src-no-creds \
             --dest-authfile /dev/shm/zalazium/registry/auth.json \
             "docker://$official" "docker://zalaziumcode/litellm:one-$GITHUB_SHA"
           # No moving tags here. Promotion requires the exact recovery-qualified record.
