@@ -80,7 +80,7 @@ class ProviderTests(unittest.TestCase):
             cost = litellm.completion_cost(model=row['litellm_params']['model'],
                 custom_llm_provider=row['litellm_params']['model'].split('/')[0],
                 router_model_id=row['model_info']['id'], custom_pricing=True,
-                call_type='speech', prompt='x' * 1000)
+                call_type='speech', prompt='a b\tc\nd ' * 125)
             self.assertAlmostEqual(cost, expected, places=10)
 
 
