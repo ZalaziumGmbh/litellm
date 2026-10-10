@@ -2,6 +2,9 @@ name: deploy-zalazium-dev
 on:
   push:
     branches: [zalazium-dev]
+  pull_request:
+    branches: [zalazium-dev]
+    paths: ['ci/**', '.github/workflows/deploy-zalazium-dev.yaml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -51,7 +54,7 @@ jobs:
           sudo runuser -u tester -- env -i HOME=/home/tester PATH=/usr/local/bin:/usr/bin:/bin \
             XDG_RUNTIME_DIR="/run/user/${test_uid}" DOCKER_HOST="unix:///run/user/${test_uid}/docker.sock" \
             docker info --format '{{json .SecurityOptions}}' | grep -q rootless
-      - name: Qualify the pinned official image without registry credentials
+      - name: Build and qualify the reviewed provider extension
         shell: bash
         run: |
           set -euo pipefail
@@ -59,14 +62,21 @@ jobs:
           official=$(cat .github/one-official-image.txt)
           sudo runuser -u tester -- env -i HOME=/home/tester PATH=/usr/local/bin:/usr/bin:/bin \
             XDG_RUNTIME_DIR="/run/user/${test_uid}" DOCKER_HOST="unix:///run/user/${test_uid}/docker.sock" \
-            OFFICIAL_IMAGE="$official" sh -c '
+            OFFICIAL_IMAGE="$official" REVISION="$GITHUB_SHA" sh -c '
               set -eu
-              docker pull "$OFFICIAL_IMAGE"
-              docker pull postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
               cd /home/tester/app
-              python3 ci/qualify_litellm.py "$OFFICIAL_IMAGE"
+              docker build --build-arg OFFICIAL_IMAGE="$OFFICIAL_IMAGE" --build-arg REVISION="$REVISION" \
+                --file ci/Dockerfile.one --tag one-candidate:local ci
+              docker run --rm --network none --user 1000:1000 --entrypoint python \
+                --mount type=bind,src=/home/tester/app/ci/test_one_provider.py,dst=/test_one_provider.py,readonly \
+                -e HOME=/tmp -e LITELLM_LOCAL_MODEL_COST_MAP=True -e LITELLM_TELEMETRY=False \
+                one-candidate:local /test_one_provider.py
+              docker pull postgres@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+              python3 ci/qualify_litellm.py one-candidate:local
+              docker save --output /home/tester/one-candidate.tar one-candidate:local
             '
-      - name: Mirror the tested official bytes to an immutable candidate
+      - name: Publish the tested immutable candidate
+        if: github.event_name != 'pull_request'
         env:
           REGISTRY_USER: ${{ secrets.DOCKER_USER }}
           REGISTRY_PASSWORD: ${{ secrets.DOCKER_TOKEN }}
@@ -80,8 +90,6 @@ jobs:
           trap 'sudo rm -rf /dev/shm/zalazium/registry' EXIT
           printf '%s' "$REGISTRY_PASSWORD" | clean_skopeo login \
             --authfile /dev/shm/zalazium/registry/auth.json --username "$REGISTRY_USER" --password-stdin docker.io
-          official=$(cat .github/one-official-image.txt)
-          clean_skopeo copy --all --preserve-digests --retry-times 3 --src-no-creds \
-            --dest-authfile /dev/shm/zalazium/registry/auth.json \
-            "docker://$official" "docker://zalaziumcode/litellm:one-$GITHUB_SHA"
-          # No moving tags here. Promotion requires the exact recovery-qualified record.
+          clean_skopeo copy --retry-times 3 --dest-authfile /dev/shm/zalazium/registry/auth.json \
+            docker-archive:/home/tester/one-candidate.tar "docker://zalaziumcode/litellm:one-$GITHUB_SHA"
+          # Moving channels still require the exact recovery-qualified record.
