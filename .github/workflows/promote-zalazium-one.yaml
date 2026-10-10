@@ -1,0 +1,47 @@
+name: Promote qualified Zalazium One release
+on:
+  push:
+    branches: [zalazium-dev]
+    paths: ['.github/one-release.json', '.github/workflows/promote-zalazium-one.yaml', 'ci/promote_one.py']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: one-qualified-channel
+  cancel-in-progress: false
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/zalazium-dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare unprivileged publication account
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+          sudo useradd --create-home tester
+          sudo mkdir -p /home/tester/app
+          sudo rsync -rl --exclude=.git --exclude='.env*' ./ /home/tester/app/
+          sudo chown -R tester:tester /home/tester/app
+          sudo install -d -m 700 -o tester -g tester /dev/shm/zalazium
+      - name: Verify the exact successful candidate and recovery record
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo runuser -u tester -- env -i HOME=/home/tester PATH=/usr/local/bin:/usr/bin:/bin \
+            GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            sh -c 'cd /home/tester/app && python3 ci/promote_one.py --verify'
+      - name: Publish only the reviewed compatible digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ secrets.DOCKER_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.DOCKER_TOKEN }}
+        run: |
+          sudo runuser -u tester -- env -i HOME=/home/tester PATH=/usr/local/bin:/usr/bin:/bin \
+            GH_TOKEN="$GH_TOKEN" GITHUB_REPOSITORY="$GITHUB_REPOSITORY" \
+            REGISTRY_USER="$REGISTRY_USER" REGISTRY_PASSWORD="$REGISTRY_PASSWORD" \
+            sh -c 'cd /home/tester/app && python3 ci/promote_one.py --publish'
