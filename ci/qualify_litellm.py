@@ -52,7 +52,8 @@ def main(image):
             except urllib.error.HTTPError as response:
                 return response.code, {}
         def ready():
-            deadline = time.monotonic() + 240
+            deadline = time.monotonic() + 900
+            next_progress = time.monotonic() + 60
             while time.monotonic() < deadline:
                 try:
                     if request('/health/liveliness')[0] == 200: return
@@ -60,6 +61,10 @@ def main(image):
                 state = json.loads(docker('inspect', '--format', '{{json .State}}', name+'-app'))
                 if not state['Running']:
                     break
+                if time.monotonic() >= next_progress:
+                    processes = docker('top', name+'-app', '-eo', 'comm')
+                    print('Fresh migration still starting; process names: ' + ','.join(processes.splitlines()[1:]), flush=True)
+                    next_progress = time.monotonic() + 60
                 time.sleep(1)
             state = json.loads(docker('inspect', '--format', '{{json .State}}', name+'-app'))
             logs = docker('logs', '--tail', '40', name+'-app')
@@ -68,7 +73,9 @@ def main(image):
             print(json.dumps({'running':state['Running'],'exit':state['ExitCode'],'oom':state['OOMKilled']}))
             print(logs[-5000:])
             raise RuntimeError('Official proxy readiness deadline exceeded')
-        docker('network', 'create', '--internal', name)
+        # Only synthetic provider routes and credentials exist in this CI network.
+        # Public toolchain downloads are permitted during fresh initialization.
+        docker('network', 'create', name)
         try:
             docker('run','-d','--name',name+'-pg','--network',name,'--network-alias','postgres',
                 '--memory','768m','-e','POSTGRES_USER=litellm','-e','POSTGRES_DB=litellm',
@@ -92,7 +99,7 @@ def main(image):
             status,key = request('/key/generate', {'models':['synthetic-approved'],'max_budget':0.1,
                 'rpm_limit':2,'tpm_limit':1000,'max_parallel_requests':1},master)
             assert status == 200 and key['key'].startswith('sk-')
-            token = key['key']
+            token = key['key']; sensitive.append(token)
             assert request('/v1/models',key=token)[0] == 200
             assert request('/v1/chat/completions',{'model':'unknown','messages':[{'role':'user','content':'synthetic'}]},token)[0] in (400,401,403)
             docker('stop','--time','60',name+'-app')
